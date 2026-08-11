@@ -14,11 +14,16 @@
 -- recurring revenue. There is no time dimension. All comparisons are
 -- BETWEEN SEGMENTS, never across time.
 --
--- SERVICE CALL BUCKETING: churn is a CLIFF at 4+ calls (11.3% -> 51.7%),
--- not a slope. Always bucket '0-3' vs '4+'. Never treat as continuous.
+-- THREE CONFIRMED CHURN DRIVERS, each an independent CLIFF (never a slope):
+--   1. customer_service_calls >= 4    10.3% -> 45.8%
+--   2. international_plan = 1         11.5% -> 42.4%
+--   3. day_charge >= 45                ~5%  -> 59.0%
+-- Always bucket these. Modelling any of them as continuous badly
+-- misrepresents the relationship.
 -- ==========================================================================
 
-DROP VIEW IF EXISTS v_customer_profile;
+DROP VIEW IF EXISTS v_risk_segments;
+DROP VIEW IF EXISTS v_churn_by_day_usage;
 DROP VIEW IF EXISTS v_churn_features;
 DROP VIEW IF EXISTS v_kpi_summary;
 DROP VIEW IF EXISTS v_churn_by_state;
@@ -28,7 +33,7 @@ DROP VIEW IF EXISTS v_churn_by_plan;
 DROP VIEW IF EXISTS v_cohort_profile;
 DROP VIEW IF EXISTS v_cohort_risk_matrix;
 DROP VIEW IF EXISTS v_revenue_by_period;
-DROP VIEW IF EXISTS v_risk_segments;
+DROP VIEW IF EXISTS v_customer_profile;
 
 
 -- --------------------------------------------------------------------------
@@ -101,9 +106,11 @@ SELECT
     ROUND(total_minutes, 1) AS total_minutes,
     ROUND(day_charge, 2)    AS day_charge,
     ROUND(intl_charge, 2)   AS intl_charge,
-    -- Count of the two confirmed drivers present on this customer.
+    CASE WHEN day_charge >= 45 THEN 1 ELSE 0 END AS heavy_day_usage,
+    -- Count of the THREE confirmed drivers present on this customer.
     (CASE WHEN high_service_calls  THEN 1 ELSE 0 END)
-  + (CASE WHEN international_plan  THEN 1 ELSE 0 END) AS risk_factor_count,
+  + (CASE WHEN international_plan  THEN 1 ELSE 0 END)
+  + (CASE WHEN day_charge >= 45    THEN 1 ELSE 0 END) AS risk_factor_count,
     churned
 FROM v_customer_profile;
 
@@ -126,7 +133,8 @@ SELECT
     ROUND(AVG(CASE WHEN international_plan THEN 1.0 ELSE 0.0 END) * 100, 2)
                                                          AS intl_plan_adoption_pct,
     SUM(CASE WHEN high_service_calls THEN 1 ELSE 0 END)  AS high_service_call_customers,
-    ROUND(AVG(customer_service_calls), 2)                AS avg_service_calls
+    ROUND(AVG(customer_service_calls), 2)                AS avg_service_calls,
+    SUM(CASE WHEN day_charge >= 45 THEN 1 ELSE 0 END)    AS heavy_day_usage_customers
 FROM v_customer_profile;
 
 
@@ -167,8 +175,8 @@ GROUP BY state;
 
 
 -- --------------------------------------------------------------------------
--- 6. CHURN BY SERVICE CALLS — the primary driver. Both the raw count
---    (for the cliff chart) and the bucket (for narration).
+-- 6. CHURN BY SERVICE CALLS — driver 1. Both the raw count (for the cliff
+--    chart) and the bucket (for narration).
 -- --------------------------------------------------------------------------
 CREATE VIEW v_churn_by_service_calls AS
 SELECT
@@ -185,7 +193,7 @@ GROUP BY customer_service_calls;
 
 
 -- --------------------------------------------------------------------------
--- 7. CHURN BY PLAN — international plan is the second confirmed driver.
+-- 7. CHURN BY PLAN — driver 2, the international plan.
 -- --------------------------------------------------------------------------
 CREATE VIEW v_churn_by_plan AS
 SELECT
@@ -266,17 +274,43 @@ FROM international_usage;
 
 
 -- --------------------------------------------------------------------------
--- 11. RISK SEGMENTS — named segments built from the two confirmed drivers.
---     This is the bridge into the Phase 6 recommendation engine.
+-- 11. RISK SEGMENTS — named segments from the THREE confirmed drivers.
+--     This is the bridge into the Phase 6 recommendation engine and MUST
+--     stay in sync with rules.py.
+--
+--     HISTORY: an earlier version used only two drivers (service calls and
+--     international plan) and reported a "Baseline" of 8.2%. That figure
+--     concealed 166 customers churning at 59% — the heavy-daytime-usage
+--     driver, found while building Phase 6. With all three separated, the
+--     true no-driver baseline is 5.0%.
+--
+--     day_charge >= 45 is roughly 265 daytime minutes at $0.17/min. The
+--     effect is INDEPENDENT: it raises churn in every combination of the
+--     other two drivers (5.0->59.0, 37.8->60.7, 48.7->66.7).
 -- --------------------------------------------------------------------------
 CREATE VIEW v_risk_segments AS
 SELECT
     CASE
-        WHEN high_service_calls AND international_plan THEN 'Critical: 4+ calls + intl plan'
-        WHEN high_service_calls                        THEN 'High: 4+ service calls'
-        WHEN international_plan                        THEN 'Elevated: intl plan'
-        ELSE                                                'Baseline'
+        WHEN high_service_calls AND international_plan AND day_charge >= 45
+            THEN 'Critical: all three drivers'
+        WHEN high_service_calls AND (international_plan OR day_charge >= 45)
+            THEN 'Severe: 4+ calls plus a second driver'
+        WHEN day_charge >= 45
+            THEN 'Severe: heavy daytime usage'
+        WHEN high_service_calls
+            THEN 'High: 4+ service calls'
+        WHEN international_plan
+            THEN 'Elevated: intl plan'
+        ELSE 'Baseline: no drivers'
     END AS segment,
+    CASE
+        WHEN high_service_calls AND international_plan AND day_charge >= 45 THEN 1
+        WHEN high_service_calls AND (international_plan OR day_charge >= 45) THEN 2
+        WHEN day_charge >= 45 THEN 3
+        WHEN high_service_calls THEN 4
+        WHEN international_plan THEN 5
+        ELSE 6
+    END AS severity_rank,
     COUNT(*)                                 AS customers,
     SUM(CASE WHEN churned THEN 1 ELSE 0 END) AS churned,
     ROUND(AVG(CASE WHEN churned THEN 1.0 ELSE 0.0 END) * 100, 2)
@@ -286,4 +320,30 @@ SELECT
     ROUND(SUM(CASE WHEN churned THEN total_charge ELSE 0 END), 2)
                                              AS revenue_at_risk
 FROM v_customer_profile
-GROUP BY segment;
+GROUP BY segment, severity_rank;
+
+
+-- --------------------------------------------------------------------------
+-- 12. CHURN BY DAY USAGE — driver 3, as a standalone view.
+--     Bucketed, not continuous: like service calls, this is a cliff.
+--     Note the shape — churn DIPS from 11.6% to 8.1% before exploding at 45.
+--     A linear model of day_charge would find almost nothing.
+-- --------------------------------------------------------------------------
+CREATE VIEW v_churn_by_day_usage AS
+SELECT
+    CASE
+        WHEN day_charge < 30 THEN '1. under 30'
+        WHEN day_charge < 40 THEN '2. 30-40'
+        WHEN day_charge < 45 THEN '3. 40-45'
+        WHEN day_charge < 50 THEN '4. 45-50'
+        ELSE                       '5. 50+'
+    END AS day_charge_band,
+    CASE WHEN day_charge >= 45 THEN 'heavy' ELSE 'normal' END AS day_usage_bucket,
+    COUNT(*)                                 AS customers,
+    SUM(CASE WHEN churned THEN 1 ELSE 0 END) AS churned,
+    ROUND(AVG(CASE WHEN churned THEN 1.0 ELSE 0.0 END) * 100, 2)
+                                             AS churn_rate_pct,
+    ROUND(AVG(day_minutes), 1)               AS avg_day_minutes,
+    ROUND(SUM(total_charge), 2)              AS revenue
+FROM v_customer_profile
+GROUP BY day_charge_band, day_usage_bucket;

@@ -6,12 +6,11 @@ serialised to JSON by FastAPI *or* injected into an LLM prompt in Phase 4.
 
 Each payload carries a `meta` block stating the snapshot constraint. That
 block is not decoration: it travels with the numbers into the prompt so the
-model is always told, in-band, that no time dimension exists.
+model is always told, in-band, what it may and may not claim. In live
+testing the model was observed citing it directly.
 """
 
 from __future__ import annotations
-
-from functools import lru_cache
 
 import pandas as pd
 from sqlalchemy import create_engine, text
@@ -28,6 +27,17 @@ SNAPSHOT_META = {
     "currency_note": "charges are period charges, not monthly recurring revenue",
     "service_call_note": "churn is a cliff at 4+ calls, not a linear slope",
     "cohort_note": "churn is flat across tenure cohorts; tenure is not a churn driver",
+    "day_usage_note": (
+        "day_charge >= 45 (about 265 daytime minutes) is a THIRD independent "
+        "driver, also a cliff: it raises churn from 5.0% to 59.0% among "
+        "customers with no other risk factor, and raises it further in every "
+        "combination of the other two drivers"
+    ),
+    "confirmed_drivers": [
+        "4+ customer service calls",
+        "international plan subscription",
+        "day_charge >= 45 (heavy daytime usage)",
+    ],
 }
 
 
@@ -80,9 +90,10 @@ def revenue_by_state(limit: int | None = None) -> dict:
 
 
 # ==========================================================================
-# Drivers
+# Drivers — three confirmed, each an independent cliff
 # ==========================================================================
 def churn_by_service_calls() -> dict:
+    """Driver 1. Churn is flat 0-3 calls, then jumps sharply at 4+."""
     detail = _rows("SELECT * FROM v_churn_by_service_calls "
                    "ORDER BY customer_service_calls")
     buckets = _rows("""
@@ -96,15 +107,36 @@ def churn_by_service_calls() -> dict:
 
 
 def churn_by_plan() -> dict:
+    """Driver 2. International plan subscribers churn several times higher."""
     return _payload("churn_by_plan",
                     _rows("SELECT * FROM v_churn_by_plan "
                           "ORDER BY churn_rate_pct DESC"))
 
 
+def churn_by_day_usage() -> dict:
+    """Driver 3. Banded, because it is a cliff not a slope.
+
+    Churn actually DIPS from 11.6% to 8.1% before exploding at day_charge 45.
+    A linear model of this variable would find almost nothing.
+    """
+    detail = _rows("SELECT * FROM v_churn_by_day_usage "
+                   "ORDER BY day_charge_band")
+    buckets = _rows("""
+        SELECT day_usage_bucket,
+               SUM(customers) AS customers,
+               SUM(churned)   AS churned,
+               ROUND(SUM(churned) * 100.0 / SUM(customers), 2) AS churn_rate_pct
+        FROM v_churn_by_day_usage
+        GROUP BY day_usage_bucket ORDER BY day_usage_bucket""")
+    return _payload("churn_by_day_usage", detail, buckets=buckets)
+
+
 def risk_segments() -> dict:
+    """Segments from all three drivers. Ordered by severity, not by rate,
+    so the ranking stays stable even if a small segment moves."""
     return _payload("risk_segments",
                     _rows("SELECT * FROM v_risk_segments "
-                          "ORDER BY churn_rate_pct DESC"))
+                          "ORDER BY severity_rank"))
 
 
 # ==========================================================================
@@ -140,6 +172,7 @@ def customer(customer_id: int) -> dict | None:
 
 
 def high_risk_customers(limit: int = 100, min_factors: int = 1) -> dict:
+    """risk_factor_count now ranges 0-3, not 0-2."""
     rows = _rows("""
         SELECT * FROM v_churn_features
         WHERE risk_factor_count >= :mf
@@ -152,11 +185,6 @@ def high_risk_customers(limit: int = 100, min_factors: int = 1) -> dict:
 # ==========================================================================
 # Bundle — everything an LLM narration call might need, in one payload.
 # ==========================================================================
-@lru_cache(maxsize=1)
-def _cached_bundle_key() -> int:
-    return 1
-
-
 def full_briefing() -> dict:
     """Single consolidated payload for the Phase 4 narration layer."""
     return {
@@ -165,6 +193,7 @@ def full_briefing() -> dict:
         "risk_segments": risk_segments()["data"],
         "service_calls": churn_by_service_calls()["buckets"],
         "plans": churn_by_plan()["data"],
+        "day_usage": churn_by_day_usage()["data"],
         "cohorts": cohort_profile()["data"],
         "cohort_risk_matrix": cohort_risk_matrix()["data"],
         "revenue_by_period": revenue_by_period()["data"],
@@ -180,6 +209,7 @@ REGISTRY = {
     "revenue_by_state": revenue_by_state,
     "churn_by_service_calls": churn_by_service_calls,
     "churn_by_plan": churn_by_plan,
+    "churn_by_day_usage": churn_by_day_usage,
     "risk_segments": risk_segments,
     "cohort_profile": cohort_profile,
     "cohort_risk_matrix": cohort_risk_matrix,

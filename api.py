@@ -179,3 +179,101 @@ def ask_question(
     if not show_sql:
         res.pop("sql", None)
     return res
+
+
+# ==========================================================================
+# Phase 6 — recommendation engine
+# ==========================================================================
+import recommend
+import rules as rules_config
+
+
+@app.get("/recommendations", tags=["recommendations"])
+def recommendations():
+    """Module 6 — deterministic rule-based recommendations."""
+    return recommend.recommendations_payload()
+
+
+@app.get("/recommendations/narrated", tags=["recommendations"])
+def recommendations_narrated():
+    """Same segments, with an LLM-written justification (validated)."""
+    return recommend.narrate_recommendations()
+
+
+@app.get("/recommendations/rules", tags=["recommendations"])
+def list_rules():
+    """The rule definitions and economic assumptions driving the output."""
+    return {"rules": rules_config.rules_by_priority(),
+            "economics": rules_config.ECONOMICS,
+            "validation": rules_config.validate_rules() or "valid"}
+
+
+@app.get("/recommendations/{rule_id}/customers", tags=["recommendations"])
+def rule_customers(rule_id: str, limit: int = Query(100, ge=1, le=1000)):
+    """The actual customers a rule targets — the audit trail."""
+    try:
+        df = recommend.customers_for_rule(rule_id, limit)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+    return {"rule_id": rule_id, "count": len(df),
+            "customers": df.to_dict(orient="records")}
+
+
+
+# ==========================================================================
+# Phase 3 — charts (rendered on request, never cached to disk)
+# ==========================================================================
+from fastapi.responses import HTMLResponse, Response
+
+import chart_specs
+import charts as charts_mod
+
+
+@app.get("/charts", tags=["charts"])
+def list_charts():
+    """Every available chart, with its kind and backing metric."""
+    return {"charts": chart_specs.list_charts(),
+            "validation": chart_specs.validate_specs() or "valid"}
+
+
+@app.get("/charts/{name}.png", tags=["charts"])
+def chart_png(name: str, dpi: int = Query(110, ge=60, le=300)):
+    """Static PNG. Same spec and data as the HTML version."""
+    try:
+        png = charts_mod.render_matplotlib(name, dpi=dpi)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))
+    return Response(content=png, media_type="image/png")
+
+
+@app.get("/charts/{name}.html", tags=["charts"], response_class=HTMLResponse)
+def chart_html(name: str):
+    """Interactive Plotly version."""
+    try:
+        return HTMLResponse(charts_mod.render_plotly(name, full_html=True))
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc))
+
+
+@app.get("/charts/{name}/data", tags=["charts"])
+def chart_data(name: str):
+    """The exact rows plotted — what the explanation is grounded in."""
+    try:
+        spec, df = charts_mod.chart_data(name)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))
+    return {"chart": name, "title": spec["title"],
+            "subtitle": spec.get("subtitle"),
+            "caption": spec.get("caption"),
+            "rows": df.to_dict(orient="records")}
+
+
+@app.get("/charts/{name}/explain", tags=["charts"])
+def chart_explain(name: str):
+    """Module 8 — AI Chart Explainer, grounded in the plotted data."""
+    try:
+        return charts_mod.explain(name)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))

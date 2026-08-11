@@ -25,6 +25,7 @@ import sqlparse
 # through them keeps generated answers consistent with the dashboard.
 ALLOWED_VIEWS = {
     "v_customer_profile",
+    "v_churn_by_day_usage",
     "v_churn_features",
     "v_kpi_summary",
     "v_churn_by_state",
@@ -208,6 +209,10 @@ v_revenue_by_period      per period. period ('day'|'eve'|'night'|'intl'),
 v_risk_segments          per segment. segment, customers, churned,
                          churn_rate_pct, revenue, arpu, revenue_at_risk
 
+v_churn_by_day_usage     per day-charge band. day_charge_band,
+                         day_usage_bucket ('heavy' | 'normal'), customers,
+                         churned, churn_rate_pct, avg_day_minutes, revenue                         
+
 NOTES
 - Dialect is SQLite.
 - Booleans are stored as 0/1.
@@ -215,4 +220,6 @@ NOTES
 - Percentages (churn_rate_pct, share_pct) are ALREADY multiplied by 100.
 - State-level rows are small (~65 customers each); filter customers >= 50
   when ranking states, or the result is statistical noise.
+- THREE churn drivers, all cliffs: 4+ service calls, international plan,
+  and day_charge >= 45. Never model any of them as continuous.
 """
