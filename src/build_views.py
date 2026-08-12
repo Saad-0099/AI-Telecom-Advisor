@@ -8,6 +8,7 @@ Idempotent: every view is dropped and recreated.
 from __future__ import annotations
 
 import logging
+import pathlib
 import sys
 
 from sqlalchemy import create_engine, text
@@ -18,7 +19,8 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)-7s %(message)s",
                     stream=sys.stdout)
 log = logging.getLogger("views")
 
-VIEWS_SQL = C.PROJECT_ROOT / "views.sql"
+# views.sql lives beside this module in src/, not at the project root.
+VIEWS_SQL = pathlib.Path(__file__).resolve().parent / "views.sql"
 
 
 def split_statements(sql: str) -> list[str]:

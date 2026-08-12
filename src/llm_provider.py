@@ -36,7 +36,11 @@ import urllib.request
 from abc import ABC, abstractmethod
 
 from dotenv import load_dotenv
-load_dotenv()   # reads .env into os.environ before the config block below
+# .env sits at the PROJECT ROOT, one level above src/. load_dotenv() with no
+# argument searches upward from the CWD, which fails when the process is
+# started from elsewhere, so the path is given explicitly.
+load_dotenv(os.path.join(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))), ".env"))
 
 # --------------------------------------------------------------------------
 # Configuration (env-driven so no secret is ever committed)

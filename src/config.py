@@ -11,7 +11,7 @@ from pathlib import Path
 # --------------------------------------------------------------------------
 # Paths
 # --------------------------------------------------------------------------
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
 
 RAW_CSV = DATA_DIR / "telecom_churn.csv"

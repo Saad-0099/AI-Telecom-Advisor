@@ -371,10 +371,13 @@ def explain(name: str) -> dict:
 # ==========================================================================
 # Export
 # ==========================================================================
-def export_all(out_dir: str = "exports", dpi: int = 150) -> list[str]:
+def export_all(out_dir: str | None = None, dpi: int = 150) -> list[str]:
     """Materialise every chart as a stamped PNG. For the Phase 7 report."""
     from pathlib import Path
-    path = Path(out_dir)
+    import config as C
+    # Default to <project root>/exports so output does not land wherever
+    # the process happened to be started from.
+    path = Path(out_dir) if out_dir else C.PROJECT_ROOT / "exports"
     path.mkdir(parents=True, exist_ok=True)
 
     written = []

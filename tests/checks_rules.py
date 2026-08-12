@@ -9,6 +9,11 @@ downstream recommendation is quietly wrong.
 """
 
 from __future__ import annotations
+# This test lives in tests/ but imports modules from src/. Adding src/ to the
+# path keeps the flat "import metrics" style working from either directory.
+import pathlib as _pathlib
+import sys as _sys
+_sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parent.parent / "src"))
 
 import sys
 

@@ -1,0 +1,130 @@
+"""
+Telecom Decision Intelligence Platform — entry point.
+
+Puts src/ on the import path so every module can keep using flat imports
+("import metrics") regardless of where the process was started from, then
+dispatches to the requested command.
+
+Usage:
+    python run.py etl              rebuild the database from the CSV
+    python run.py views            build the SQL views
+    python run.py check            run every offline check suite
+    python run.py api              start the FastAPI server
+    python run.py charts           list available charts
+    python run.py export           write chart PNGs to exports/
+    python run.py evals [--live]   guardrail evals
+    python run.py sqlevals [--live|--compare]
+    python run.py all              full rebuild + all offline checks
+
+Everything except --live and --compare runs offline and costs nothing.
+"""
+
+from __future__ import annotations
+
+import pathlib
+import subprocess
+import sys
+
+ROOT = pathlib.Path(__file__).resolve().parent
+SRC = ROOT / "src"
+TESTS = ROOT / "tests"
+sys.path.insert(0, str(SRC))
+
+
+def _run(script: pathlib.Path, *args: str) -> int:
+    """Run a script in a subprocess so each gets a clean interpreter."""
+    return subprocess.call([sys.executable, str(script), *args],
+                           cwd=str(ROOT))
+
+
+def cmd_etl(args): return _run(SRC / "etl.py", *args)
+def cmd_views(args): return _run(SRC / "build_views.py", *args)
+def cmd_evals(args): return _run(TESTS / "evals.py", *args)
+def cmd_sqlevals(args): return _run(TESTS / "sql_evals.py", *args)
+
+
+def cmd_check(args) -> int:
+    """Every offline suite. No API calls, no quota spent."""
+    suites = [
+        ("Phase 1 — data", TESTS / "checks.py"),
+        ("Phase 2 — views", TESTS / "checks_views.py"),
+        ("Phase 6 — rules", TESTS / "checks_rules.py"),
+        ("Phase 4 — guardrails", TESTS / "evals.py"),
+        ("Phase 5 — SQL guard", TESTS / "sql_evals.py"),
+    ]
+    failed = []
+    for label, script in suites:
+        print(f"\n{'=' * 62}\n{label}\n{'=' * 62}")
+        if _run(script) != 0:
+            failed.append(label)
+    print(f"\n{'=' * 62}")
+    if failed:
+        print(f"SUITES FAILED: {failed}")
+        return 1
+    print(f"ALL {len(suites)} SUITES PASSED")
+    return 0
+
+
+def cmd_api(args) -> int:
+    import uvicorn
+    print("Serving on http://127.0.0.1:8000  (docs at /docs)")
+    uvicorn.run("api:app", host="127.0.0.1", port=8000,
+                reload=True, app_dir=str(SRC))
+    return 0
+
+
+def cmd_charts(args) -> int:
+    import chart_specs
+    problems = chart_specs.validate_specs()
+    for c in chart_specs.list_charts():
+        print(f"  {c['id']:<26} {c['kind']:<13} {c['title']}")
+    if problems:
+        print("\nSPEC PROBLEMS:")
+        for p in problems:
+            print(f"  - {p}")
+        return 1
+    return 0
+
+
+def cmd_export(args) -> int:
+    import charts
+    out = args[0] if args else None
+    for f in charts.export_all(out):
+        print("wrote", f)
+    return 0
+
+
+def cmd_all(args) -> int:
+    """Full rebuild from the CSV, then every offline check."""
+    for step in (cmd_etl, cmd_views):
+        if step([]) != 0:
+            print("build step failed; stopping")
+            return 1
+    return cmd_check([])
+
+
+COMMANDS = {
+    "etl": cmd_etl,
+    "views": cmd_views,
+    "check": cmd_check,
+    "api": cmd_api,
+    "charts": cmd_charts,
+    "export": cmd_export,
+    "evals": cmd_evals,
+    "sqlevals": cmd_sqlevals,
+    "all": cmd_all,
+}
+
+
+def main() -> int:
+    if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
+        print(__doc__)
+        if len(sys.argv) > 1:
+            print(f"Unknown command: {sys.argv[1]}")
+            return 1
+        return 0
+    return COMMANDS[sys.argv[1]](sys.argv[2:])
+
+
+if __name__ == "__main__":
+    sys.exit(main())
