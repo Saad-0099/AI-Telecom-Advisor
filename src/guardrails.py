@@ -117,8 +117,49 @@ FLATNESS_MARKERS = [
     "not a churn driver", "ranging from", "essentially the same",
 ]
 
+
 FORWARD_WINDOW = 120  # characters to look ahead
 
+# Phrases signalling a CROSS-SECTIONAL comparison rather than a temporal
+# one. "Churn increases from 5.0% to 59.0% when this factor is present"
+# compares two groups in the same snapshot; it is not a claim about time.
+# Without this, the validator rejects a correct description of a segment
+# difference purely because the verb happens to be "increases".
+COMPARISON_MARKERS = [
+    "from", "to", "when", "among", "for customers", "versus", "vs",
+    "compared with", "compared to", "against", "between",
+    "with this factor", "without", "present", "segment", "group",
+    "band", "cohort", "bucket", "threshold", "those who", "customers who",
+]
+
+COMPARISON_WINDOW = 100
+
+
+def _is_cross_sectional(lowered: str, phrase: str) -> bool:
+    """True if EVERY occurrence of `phrase` reads as a segment comparison.
+
+    Requires the sentence to contain a percentage or figure pair as well as
+    comparison vocabulary, so a bare "revenue increased" is still caught.
+    """
+    import re as _re
+    start = 0
+    while True:
+        idx = lowered.find(phrase, start)
+        if idx == -1:
+            return True
+        window = lowered[max(0, idx - COMPARISON_WINDOW):
+                         idx + len(phrase) + COMPARISON_WINDOW]
+        for stop in (".", "!", "?", ";", "\n"):
+            if stop in window[:COMPARISON_WINDOW]:
+                window = window[window[:COMPARISON_WINDOW].rfind(stop) + 1:]
+        # Two figures in the same clause means a comparison of two values,
+        # which in a snapshot can only be between groups.
+        figures = _re.findall(r"\d+(?:\.\d+)?\s*%?", window)
+        has_pair = len(figures) >= 2
+        has_marker = any(m in window for m in COMPARISON_MARKERS)
+        if not (has_pair and has_marker):
+            return False
+        start = idx + len(phrase)
 
 def _claim_defused(lowered: str, phrase: str) -> bool:
     """True if EVERY occurrence of a driver claim is negated or qualified.
@@ -273,8 +314,10 @@ def validate(text: str, payload: dict, rel_tol: float = 0.01) -> dict:
     # "there is no prior period" must pass, "up from the prior period"
     # must fail. We inspect the text immediately preceding each match.
     hits = [p for p in FORBIDDEN_TEMPORAL
-            if p in lowered and not _all_negated(lowered, p)]
-
+            if p in lowered
+            and not _all_negated(lowered, p)
+            and not _is_cross_sectional(lowered, p)]
+    
     if hits and not simulated:
         violations.append({
             "type": "temporal_claim",

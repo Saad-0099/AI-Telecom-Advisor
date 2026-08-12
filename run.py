@@ -45,6 +45,7 @@ def _run(script: pathlib.Path, *args: str) -> int:
 def cmd_etl(args): return _run(SRC / "etl.py", *args)
 def cmd_simulate(args): return _run(SRC / "simulate_history.py", *args)
 def cmd_views(args): return _run(SRC / "build_views.py", *args)
+def cmd_report(args): return _run(SRC / "report_pdf.py", *args)
 def cmd_evals(args): return _run(TESTS / "evals.py", *args)
 def cmd_sqlevals(args): return _run(TESTS / "sql_evals.py", *args)
 
@@ -58,6 +59,7 @@ def cmd_check(args) -> int:
         ("Phase 6.5 — simulated panel", TESTS / "checks_simulated.py"),
         ("Phase 4 — guardrails", TESTS / "evals.py"),
         ("Phase 5 — SQL guard", TESTS / "sql_evals.py"),
+        ("Phase 7 — report", TESTS / "checks_report.py"),
     ]
     failed = []
     for label, script in suites:
@@ -124,6 +126,7 @@ COMMANDS = {
     "export": cmd_export,
     "evals": cmd_evals,
     "sqlevals": cmd_sqlevals,
+    "report": cmd_report,
     "all": cmd_all,
 }
 

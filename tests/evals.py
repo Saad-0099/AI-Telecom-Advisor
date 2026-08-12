@@ -61,6 +61,12 @@ SAMPLE = {
         {"cohort_label": "New (0-60d)", "churn_rate_pct": 13.11},
         {"cohort_label": "Established (101-140d)", "churn_rate_pct": 15.29},
     ],
+    "day_usage": [
+        {"day_usage_bucket": "normal", "customers": 3123,
+         "churn_rate_pct": 5.0},
+        {"day_usage_bucket": "heavy", "customers": 210,
+         "churn_rate_pct": 59.0},
+    ],
 }
 
 CASES = [
@@ -141,6 +147,15 @@ CASES = [
 
     ("small counting integers ignored",
      "There are 2 main drivers and 4 segments worth reviewing.", True),
+
+     ("live: cross-sectional 'increasing from X to Y' (regression)",
+     "The heavy daytime usage customers, numbering 210, pose a significant "
+     "risk, with churn increasing from 5.0% to 59.0% when this factor is "
+     "present.", True),
+
+    ("bare temporal claim still caught alongside a comparison",
+     "Churn increased last quarter. Service calls raise it from 11.25% to "
+     "51.69%.", False),
 ]
 
 

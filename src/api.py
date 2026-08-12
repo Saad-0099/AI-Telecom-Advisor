@@ -277,3 +277,23 @@ def chart_explain(name: str):
         return charts_mod.explain(name)
     except KeyError as exc:
         raise HTTPException(404, str(exc))
+
+
+# ==========================================================================
+# Phase 6.5 — simulated history
+# ==========================================================================
+@app.get("/simulated/monthly-portfolio", tags=["simulated"])
+def sim_monthly_portfolio():
+    """SIMULATED history. Churn here is flat by construction."""
+    return metrics.sim_monthly_portfolio()
+
+
+@app.get("/simulated/monthly-revenue", tags=["simulated"])
+def sim_monthly_revenue():
+    return metrics.sim_monthly_revenue()
+
+
+@app.get("/simulated/tenure-curve", tags=["simulated"])
+def sim_tenure_curve():
+    """Lifecycle view — the legitimate use of the panel."""
+    return metrics.sim_tenure_curve()

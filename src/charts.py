@@ -15,7 +15,7 @@ export_all() materialises PNGs on demand for the Phase 7 report or slides.
 Exported files carry a footer stamp recording the thresholds in force, so a
 stray PNG found later can be checked rather than assumed current.
 
-Run:  python charts.py --export ./exports
+Run:  python run.py export
 """
 
 from __future__ import annotations
@@ -82,6 +82,11 @@ def _bar_colors(spec: dict, df: pd.DataFrame) -> list[str]:
             danger = danger or float(row[y]) >= spec["highlight_above_y"]
         colors.append(CS.COLORS["danger"] if danger else CS.COLORS["normal"])
     return colors
+
+
+def _line_color(spec: dict) -> str:
+    """Simulated series are amber; observed series are blue."""
+    return CS.COLORS["warning"] if spec.get("simulated") else CS.COLORS["normal"]
 
 
 def _fmt(value: Any, spec: dict) -> str:
@@ -155,6 +160,17 @@ def render_matplotlib(name: str, stamp: bool = False,
             ax.text(val, i, "  " + _fmt(val, spec) + notes[i],
                     va="center", fontsize=9, color=CS.COLORS["text"])
 
+    elif kind == "line":
+        ax.plot(df[x].astype(str), df[y], marker="o", linewidth=2,
+                markersize=5, color=_line_color(spec))
+        # Simulated series start the y-axis at zero. Autoscaling a flat
+        # series magnifies noise into what looks like a trend: an active
+        # base moving between 569 and 654 would fill the frame and read
+        # as a collapse.
+        if spec.get("simulated"):
+            ax.set_ylim(0, max(df[y]) * 1.25)
+        plt.setp(ax.get_xticklabels(), rotation=45, ha="right", fontsize=8)
+
     else:   # bar
         colors = _bar_colors(spec, df)
         ax.bar(df[x].astype(str), df[y], color=colors)
@@ -202,7 +218,10 @@ def render_matplotlib(name: str, stamp: bool = False,
     if stamp:
         footer = (footer + "\n" + _stamp()).strip()
     if footer:
-        fig.text(0.01, -0.02, footer, fontsize=8, color="#8A94A6",
+        # Rotated tick labels push the axis label down, so line charts need
+        # the caption further clear or the two collide.
+        offset = -0.14 if kind == "line" else -0.02
+        fig.text(0.01, offset, footer, fontsize=8, color="#8A94A6",
                  wrap=True, va="top")
 
     buf = io.BytesIO()
@@ -250,6 +269,15 @@ def render_plotly(name: str, full_html: bool = False) -> str:
                           for i, v in enumerate(df[y])],
                     textposition="outside")
         fig.update_yaxes(autorange="reversed")
+
+    elif kind == "line":
+        fig.add_scatter(x=df[x].astype(str), y=df[y], mode="lines+markers",
+                        line=dict(width=2, color=_line_color(spec)),
+                        marker=dict(size=7))
+        # Same zero-based rule as matplotlib: a flat simulated series must
+        # not be autoscaled into something that looks like a trend.
+        if spec.get("simulated"):
+            fig.update_yaxes(range=[0, max(df[y]) * 1.25])
 
     else:
         colors = _bar_colors(spec, df)
@@ -323,6 +351,15 @@ def explain(name: str) -> dict:
         "plotted_data": df.to_dict(orient="records"),
     }
 
+    # Simulated charts must carry their origin INTO the payload, or
+    # guardrails._is_simulated() cannot detect them and will apply the
+    # stricter no-temporal-claims rule to a legitimate time series.
+    if spec.get("simulated"):
+        payload["data_origin"] = "SIMULATED"
+        payload["meta"]["simulation_note"] = (
+            "This history is generated, not observed. Churn in it is flat "
+            "by construction; any variation is sampling noise.")
+
     weak = _low_sample(spec, df)
     if any(weak):
         payload["small_sample_warning"] = (
@@ -393,10 +430,11 @@ if __name__ == "__main__":
     import sys
     if "--export" in sys.argv:
         i = sys.argv.index("--export")
-        out = sys.argv[i + 1] if len(sys.argv) > i + 1 else "exports"
+        out = sys.argv[i + 1] if len(sys.argv) > i + 1 else None
         for f in export_all(out):
             print("wrote", f)
     else:
         print("charts available:")
         for c in CS.list_charts():
-            print(f"  {c['id']:<26} {c['kind']:<13} {c['title']}")
+            tag = " [SIMULATED]" if c.get("simulated") else ""
+            print(f"  {c['id']:<26} {c['kind']:<13} {c['title']}{tag}")

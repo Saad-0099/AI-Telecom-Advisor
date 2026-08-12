@@ -7,7 +7,7 @@ claims, where the annotation points, what the explanation should emphasise
 — lives here and nowhere else. A matplotlib PNG, a Plotly HTML, and the
 narration of the same chart therefore cannot disagree.
 
-Two fields drive the explanation:
+Three fields drive the explanation:
 
   explain_focus   What is actually interesting about THIS chart. A single
                   generic instruction across ten structurally different
@@ -19,6 +19,10 @@ Two fields drive the explanation:
                   measurements — the dataset contains no evidence for them.
                   The explainer is instructed to present them as possible
                   explanations, never as findings.
+
+  simulated       Marks a chart drawn from the Phase 6.5 generated panel.
+                  Changes the colour to amber, forces a zero-based y-axis,
+                  and the explain_focus requires disclosure in the prose.
 
 DELIBERATELY NOT A PLOTTING DSL. Five chart kinds cover everything this
 project needs. If a chart wants something exotic, write it as a one-off
@@ -36,7 +40,7 @@ KINDS = {"bar", "barh", "grouped_bar", "line", "pie"}
 COLORS = {
     "normal": "#5B8FF9",
     "danger": "#E8684A",
-    "warning": "#F6BD16",
+    "warning": "#F6BD16",     # also the simulated-data colour
     "safe": "#5AD8A6",
     "muted": "#C2C8D5",
     "text": "#2C3543",
@@ -355,6 +359,59 @@ CHART_SPECS = {
                     "these rates carry several points of noise — the state "
                     "dimension is the weakest in this dataset."),
     },
+
+    # ----------------------------------------------------------------------
+    # SIMULATED history (Phase 6.5). Structure only — never churn.
+    # ----------------------------------------------------------------------
+    "sim_monthly_structure": {
+        "title": "Active customers by month (simulated history)",
+        "subtitle": ("SIMULATED. Shows portfolio shape only — churn in this "
+                     "panel is flat by construction."),
+        "metric": "sim_monthly_portfolio",
+        "kind": "line",
+        "x": "snapshot_month",
+        "y": "active_customers",
+        "x_label": "Month",
+        "y_label": "Active customers",
+        "simulated": True,
+        "explain_focus": (
+            "You MUST state that this history is simulated. Describe the "
+            "stability of the active base and nothing more. Do NOT comment "
+            "on churn: churn in this panel is flat by construction and any "
+            "variation is sampling noise from the generator."
+        ),
+        "hypotheses": [
+            "a stable active base means entries and exits are roughly in "
+            "balance across the period shown",
+        ],
+        "caption": ("Generated from the snapshot, not observed. Included to "
+                    "show portfolio shape; it contains no information the "
+                    "snapshot did not already hold."),
+    },
+
+    "sim_monthly_revenue": {
+        "title": "Monthly revenue (simulated history)",
+        "subtitle": ("SIMULATED. Revenue derived by splitting each "
+                     "customer's real total across their active months."),
+        "metric": "sim_monthly_revenue",
+        "kind": "line",
+        "x": "snapshot_month",
+        "y": "total_revenue",
+        "x_label": "Month",
+        "y_label": "Revenue",
+        "value_prefix": "$",
+        "simulated": True,
+        "explain_focus": (
+            "You MUST state that this history is simulated. Describe only "
+            "the stability of monthly revenue. Do NOT treat any month-to-"
+            "month movement as a trend: the split across months was "
+            "generated, so variation here reflects the generator rather "
+            "than customer behaviour."
+        ),
+        "caption": ("Each customer's real total charge was distributed "
+                    "across their active months. Monthly totals sum back to "
+                    "the real portfolio revenue."),
+    },
 }
 
 
@@ -369,6 +426,7 @@ def list_charts() -> list[dict]:
     return [{"id": k, "title": v["title"], "kind": v.get("kind_override",
                                                          v["kind"]),
              "metric": v["metric"],
+             "simulated": bool(v.get("simulated")),
              "has_explain_focus": "explain_focus" in v}
             for k, v in CHART_SPECS.items()]
 
@@ -396,4 +454,17 @@ def validate_specs() -> list[str]:
                             f"explanation will be generic")
         if not isinstance(spec.get("hypotheses", []), list):
             problems.append(f"{name}: 'hypotheses' must be a list")
+
+        # A simulated chart whose focus text does not demand disclosure
+        # would produce a caption that reads like observed history.
+        if spec.get("simulated"):
+            focus = spec.get("explain_focus", "").lower()
+            if "simulated" not in focus:
+                problems.append(
+                    f"{name}: marked simulated but explain_focus does not "
+                    f"require the model to disclose it")
+            if spec.get("metric", "").startswith("sim_") is False:
+                problems.append(
+                    f"{name}: marked simulated but reads a non-simulated "
+                    f"metric '{spec.get('metric')}'")
     return problems
