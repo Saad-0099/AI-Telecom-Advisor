@@ -1,13 +1,21 @@
 """
 Phase 1 validation — proves the database faithfully represents the CSV.
 
-Run AFTER etl.py:   python checks.py
+Run:  python run.py check
 Exit code 0 = all checks passed. Non-zero = something is wrong.
 
-This is the gate for Phase 2: do not build metric views until this is green.
+This is the gate for everything downstream: if the database does not match
+the source CSV, every metric, chart and recommendation built on it is
+quietly wrong.
+
+SCOPE: this suite covers the REAL snapshot tables only. The Phase 6.5
+simulated panel (customer_snapshot_simulated) is validated separately by
+checks_simulated.py, and is exempt from the no-time-dimension rule because
+having time columns is the entire point of it.
 """
 
 from __future__ import annotations
+
 # This test lives in tests/ but imports modules from src/. Adding src/ to the
 # path keeps the flat "import metrics" style working from either directory.
 import pathlib as _pathlib
@@ -107,17 +115,38 @@ def run():
     d_intl = q1(engine, "SELECT SUM(international_plan) FROM plan_subscription")
     check("international_plan count matches", s_intl == d_intl, f"{s_intl} vs {d_intl}")
 
-    print("\n=== NO TIME DIMENSION (Phase 0 constraint) ===")
+    print("\n=== NO TIME DIMENSION IN REAL TABLES (Phase 0 constraint) ===")
+    # customer_snapshot_simulated is EXEMPT: the Phase 6.5 panel is meant to
+    # have time columns. This guards the REAL tables, so nothing built on
+    # the snapshot can imply a trend the source data cannot support.
     with engine.connect() as conn:
         tables = [r[0] for r in conn.execute(text(
-            "SELECT name FROM sqlite_master WHERE type='table'"))]
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name NOT LIKE '%_simulated'"))]
+        # Token match, not substring: 'revenue_at_risk' must not trip on
+        # '_at', and 'day_charge' must not trip on 'day'.
+        temporal = {"date", "time", "month", "year", "quarter",
+                    "timestamp", "week"}
         date_cols = []
         for t in tables:
             for row in conn.execute(text(f"PRAGMA table_info({t})")):
                 col = row[1].lower()
-                if any(k in col for k in ("date", "time", "month", "year", "_at")):
+                tokens = set(col.split("_"))
+                if (tokens & temporal) or col.endswith("_at"):
                     date_cols.append(f"{t}.{row[1]}")
-    check("no date/time columns exist", not date_cols, str(date_cols))
+    check("no date/time columns in any REAL table", not date_cols,
+          str(date_cols))
+
+    # The exemption must stay narrow and visible. If a simulated table ever
+    # appears without the naming convention, it would be silently policed
+    # by the check above and fail for the wrong reason.
+    with engine.connect() as conn:
+        sim_tables = [r[0] for r in conn.execute(text(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name LIKE '%_simulated'"))]
+    if sim_tables:
+        check("simulated tables are separately named", True,
+              f"{len(sim_tables)} exempt: {sim_tables}")
 
     print("\n=== COHORT DISTRIBUTION ===")
     dist = pd.read_sql("""
@@ -137,7 +166,7 @@ def run():
     if failed:
         print(f"FAILED {len(failed)}/{len(results)}: {failed}")
         return 1
-    print(f"ALL {len(results)} CHECKS PASSED — Phase 1 complete, Phase 2 unblocked.")
+    print(f"ALL {len(results)} CHECKS PASSED — Phase 1 verified.")
     return 0
 
 

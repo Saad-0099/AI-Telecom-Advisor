@@ -78,6 +78,34 @@ NEGATION_MARKERS = [
 # "over time". A 60-char window produced false positives on correct refusals.
 NEGATION_WINDOW = 180  # characters to look back
 
+# Words that must appear when a response makes a time-based claim from the
+# simulated panel. Structural, not documentation: a screenshot of a chart
+# outlives its caption, so the prose itself has to carry the disclosure.
+SIMULATION_DISCLOSURES = [
+    "simulated", "simulation", "synthetic", "generated history",
+    "not real history", "illustrative",
+]
+
+# A temporal phrase within this distance of a churn word is a churn-trend
+# claim, which stays forbidden even for simulated data.
+CHURN_WORDS = ["churn", "attrition", "cancellation", "customers lost",
+               "customers leaving", "retention rate"]
+CHURN_PROXIMITY = 90
+
+
+def _near_churn_word(lowered: str, phrase: str) -> bool:
+    """True if any occurrence of `phrase` sits near a churn word."""
+    start = 0
+    while True:
+        idx = lowered.find(phrase, start)
+        if idx == -1:
+            return False
+        window = lowered[max(0, idx - CHURN_PROXIMITY):
+                         idx + len(phrase) + CHURN_PROXIMITY]
+        if any(w in window for w in CHURN_WORDS):
+            return True
+        start = idx + len(phrase)
+
 # Phrases that FOLLOW a driver claim and defuse it. A correct answer often
 # reads "newer customers churn at similar rates to long-tenured ones" — the
 # qualifier comes after the pattern, so a backward-only window misses it.
@@ -199,13 +227,29 @@ def _grounded(value: float, allowed: set[float], rel_tol: float) -> bool:
             return True
     return False
 
+def _is_simulated(payload: dict) -> bool:
+    """True when the payload comes from the simulated history panel.
+
+    Detected from the payload itself rather than passed in as a flag, so a
+    caller cannot accidentally unlock temporal claims for real data.
+    """
+    def walk(node) -> bool:
+        if isinstance(node, dict):
+            if str(node.get("data_origin", "")).upper() == "SIMULATED":
+                return True
+            return any(walk(v) for v in node.values())
+        if isinstance(node, (list, tuple)):
+            return any(walk(v) for v in node)
+        return False
+    return walk(payload)
 
 # --------------------------------------------------------------------------
 def validate(text: str, payload: dict, rel_tol: float = 0.01) -> dict:
     """Check an LLM response against the payload that produced it.
-
+    
     Returns a report dict. `passed` is False if any hard violation fired.
     """
+    simulated = _is_simulated(payload)
     lowered = text.lower()
     violations: list[dict] = []
     warnings: list[dict] = []
@@ -230,19 +274,28 @@ def validate(text: str, payload: dict, rel_tol: float = 0.01) -> dict:
     # must fail. We inspect the text immediately preceding each match.
     hits = [p for p in FORBIDDEN_TEMPORAL
             if p in lowered and not _all_negated(lowered, p)]
-    if hits:
+
+    if hits and not simulated:
         violations.append({
             "type": "temporal_claim",
             "detail": f"asserts change over time: {hits}",
         })
-
-    soft = [w for w in SOFT_TEMPORAL
-            if re.search(rf"\b{re.escape(w)}\b", lowered)]
-    if soft:
-        warnings.append({
-            "type": "soft_temporal",
-            "detail": f"check these are recommendations, not claims: {soft}",
-        })
+    elif simulated:
+        # Structural time-series language is permitted, but churn trends
+        # are not: simulated churn is flat by construction.
+        churn_trend = [p for p in hits if _near_churn_word(lowered, p)]
+        if churn_trend:
+            violations.append({
+                "type": "simulated_churn_trend",
+                "detail": (f"claims a churn trend from simulated history, "
+                           f"which is flat by construction: {churn_trend}"),
+            })
+        if hits and not any(m in lowered for m in SIMULATION_DISCLOSURES):
+            violations.append({
+                "type": "undisclosed_simulation",
+                "detail": ("makes a time-based claim from simulated history "
+                           "without saying the history is simulated"),
+            })
 
     # --- 3. false drivers ---------------------------------------------
     tenure_hits = [p for p in FALSE_TENURE_CLAIMS

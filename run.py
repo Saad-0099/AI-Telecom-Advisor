@@ -7,6 +7,7 @@ dispatches to the requested command.
 
 Usage:
     python run.py etl              rebuild the database from the CSV
+    python run.py simulate         generate the SIMULATED monthly history
     python run.py views            build the SQL views
     python run.py check            run every offline check suite
     python run.py api              start the FastAPI server
@@ -17,6 +18,10 @@ Usage:
     python run.py all              full rebuild + all offline checks
 
 Everything except --live and --compare runs offline and costs nothing.
+
+ORDER MATTERS for a rebuild: etl -> simulate -> views. The simulated views
+only build if the panel table already exists, so running views before
+simulate silently skips them. 'all' sequences this correctly.
 """
 
 from __future__ import annotations
@@ -38,6 +43,7 @@ def _run(script: pathlib.Path, *args: str) -> int:
 
 
 def cmd_etl(args): return _run(SRC / "etl.py", *args)
+def cmd_simulate(args): return _run(SRC / "simulate_history.py", *args)
 def cmd_views(args): return _run(SRC / "build_views.py", *args)
 def cmd_evals(args): return _run(TESTS / "evals.py", *args)
 def cmd_sqlevals(args): return _run(TESTS / "sql_evals.py", *args)
@@ -49,6 +55,7 @@ def cmd_check(args) -> int:
         ("Phase 1 — data", TESTS / "checks.py"),
         ("Phase 2 — views", TESTS / "checks_views.py"),
         ("Phase 6 — rules", TESTS / "checks_rules.py"),
+        ("Phase 6.5 — simulated panel", TESTS / "checks_simulated.py"),
         ("Phase 4 — guardrails", TESTS / "evals.py"),
         ("Phase 5 — SQL guard", TESTS / "sql_evals.py"),
     ]
@@ -95,8 +102,12 @@ def cmd_export(args) -> int:
 
 
 def cmd_all(args) -> int:
-    """Full rebuild from the CSV, then every offline check."""
-    for step in (cmd_etl, cmd_views):
+    """Full rebuild from the CSV, then every offline check.
+
+    simulate runs BEFORE views: build_views.py skips the simulated view
+    file when customer_snapshot_simulated does not exist yet.
+    """
+    for step in (cmd_etl, cmd_simulate, cmd_views):
         if step([]) != 0:
             print("build step failed; stopping")
             return 1
@@ -105,6 +116,7 @@ def cmd_all(args) -> int:
 
 COMMANDS = {
     "etl": cmd_etl,
+    "simulate": cmd_simulate,
     "views": cmd_views,
     "check": cmd_check,
     "api": cmd_api,

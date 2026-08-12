@@ -202,6 +202,50 @@ def full_briefing() -> dict:
                                               limit=10)["data"],
     }
 
+# ==========================================================================
+# SIMULATED history (Phase 6.5)
+# ==========================================================================
+SIMULATED_META = {
+    "data_origin": "SIMULATED",
+    "warning": (
+        "This history is GENERATED from a single snapshot, not observed. "
+        "It is suitable for showing portfolio structure over time and for "
+        "tenure-lifecycle views."
+    ),
+    "churn_caveat": (
+        "Churn is FLAT by construction. Month-to-month variation is "
+        "sampling noise, NOT a trend. This panel cannot support a churn "
+        "forecast."
+    ),
+    "disclosure_required": (
+        "Any statement using this data must say the history is simulated."
+    ),
+}
+
+
+def _sim_payload(metric: str, data) -> dict:
+    return {"metric": metric, "meta": {**SNAPSHOT_META, **SIMULATED_META},
+            "data": data}
+
+
+def sim_monthly_portfolio() -> dict:
+    return _sim_payload("sim_monthly_portfolio",
+                        _rows("SELECT * FROM v_sim_monthly_portfolio "
+                              "ORDER BY snapshot_month"))
+
+
+def sim_monthly_revenue() -> dict:
+    return _sim_payload("sim_monthly_revenue",
+                        _rows("SELECT * FROM v_sim_monthly_revenue "
+                              "ORDER BY snapshot_month"))
+
+
+def sim_tenure_curve() -> dict:
+    """The legitimate use of the panel: a lifecycle view, not a trend."""
+    return _sim_payload("sim_tenure_curve",
+                        _rows("SELECT * FROM v_sim_tenure_curve "
+                              "ORDER BY tenure_month"))
+
 
 REGISTRY = {
     "kpi_summary": kpi_summary,
@@ -214,4 +258,7 @@ REGISTRY = {
     "cohort_profile": cohort_profile,
     "cohort_risk_matrix": cohort_risk_matrix,
     "revenue_by_period": revenue_by_period,
+    "sim_monthly_portfolio": sim_monthly_portfolio,
+    "sim_monthly_revenue": sim_monthly_revenue,
+    "sim_tenure_curve": sim_tenure_curve,
 }

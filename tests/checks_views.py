@@ -2,17 +2,23 @@
 Phase 2 validation — proves every view agrees with the base tables
 and with each other.
 
-Run AFTER build_views.py:   python checks_views.py
+Run:  python run.py check
 
 This is the gate for everything downstream: the charts, the rules engine,
 and the LLM layers all consume these views, so they must be right first.
 
-The regression guards at the bottom are the important part. They pin the
-three confirmed churn drivers, so a badly-tuned threshold fails here rather
-than surfacing as a quietly wrong recommendation three phases later.
+The regression guards are the important part. They pin the three confirmed
+churn drivers, so a badly-tuned threshold fails here rather than surfacing
+as a quietly wrong recommendation three phases later.
+
+SCOPE: this suite covers the REAL snapshot views only. The Phase 6.5
+simulated views (v_sim_*) are validated separately by checks_simulated.py,
+and are exempt from the no-time-dimension rule because having time columns
+is the entire point of them.
 """
 
 from __future__ import annotations
+
 # This test lives in tests/ but imports modules from src/. Adding src/ to the
 # path keeps the flat "import metrics" style working from either directory.
 import pathlib as _pathlib
@@ -39,6 +45,11 @@ def q1(engine, sql: str):
         return conn.execute(text(sql)).scalar()
 
 
+def _rows(engine, sql: str) -> list[tuple]:
+    with engine.connect() as conn:
+        return [tuple(r) for r in conn.execute(text(sql))]
+
+
 def run():
     e = create_engine(C.DB_URL)
 
@@ -53,8 +64,8 @@ def run():
         "v_revenue_by_period", "v_risk_segments", "v_churn_by_day_usage",
     }
     missing = expected - present
-    check("all 12 views are built", not missing,
-          f"missing: {sorted(missing)}. Run build_views.py" if missing else "")
+    check("all 12 real views are built", not missing,
+          f"missing: {sorted(missing)}. Run 'python run.py views'" if missing else "")
     if missing:
         print("\nStopping: later checks would fail confusingly on missing views.")
         return 1
@@ -161,10 +172,15 @@ def run():
           q1(e, """SELECT churn_rate_pct FROM v_risk_segments
                    WHERE segment LIKE 'Baseline%'""") < 10)
 
-    print("\n=== NO TIME DIMENSION IN VIEWS ===")
+    print("\n=== NO TIME DIMENSION IN REAL VIEWS ===")
+    # v_sim_* views are EXEMPT: the Phase 6.5 simulated panel legitimately
+    # has time columns. This check exists to keep the REAL snapshot views
+    # free of them, so nothing downstream can imply a trend the source data
+    # cannot support.
     with e.connect() as conn:
         views = [r[0] for r in conn.execute(text(
-            "SELECT name FROM sqlite_master WHERE type='view'"))]
+            "SELECT name FROM sqlite_master WHERE type='view' "
+            "AND name NOT LIKE 'v_sim_%'"))]
         # Token match, not substring: 'revenue_at_risk' must not trip on '_at',
         # and 'day_charge' must not trip on 'day'.
         temporal = {"date", "month", "year", "quarter", "timestamp", "week"}
@@ -175,7 +191,16 @@ def run():
                 tokens = set(col.split("_"))
                 if (tokens & temporal) or col.endswith("_at"):
                     bad.append(f"{v}.{row[1]}")
-    check("no temporal columns in any view", not bad, str(bad))
+    check("no temporal columns in any REAL view", not bad, str(bad))
+
+    # The exemption must be narrow. If a v_sim_ view ever queries a real
+    # table directly, time columns could leak into snapshot reporting.
+    sim_views = [r[0] for r in _rows(e,
+        "SELECT name FROM sqlite_master WHERE type='view' "
+        "AND name LIKE 'v_sim_%'")]
+    if sim_views:
+        check("simulated views are separately named", True,
+              f"{len(sim_views)} exempt: {sim_views}")
 
     failed = [nm for ok, nm in results if not ok]
     print("\n" + "=" * 60)
@@ -184,12 +209,6 @@ def run():
         return 1
     print(f"ALL {len(results)} CHECKS PASSED — Phase 2 verified.")
     return 0
-
-
-def _rows(engine, sql: str) -> list[tuple]:
-    with engine.connect() as conn:
-        return [tuple(r) for r in conn.execute(text(sql))]
-
 
 if __name__ == "__main__":
     sys.exit(run())
