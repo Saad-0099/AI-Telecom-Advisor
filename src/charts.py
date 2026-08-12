@@ -15,6 +15,12 @@ export_all() materialises PNGs on demand for the Phase 7 report or slides.
 Exported files carry a footer stamp recording the thresholds in force, so a
 stray PNG found later can be checked rather than assumed current.
 
+HONESTY FEATURES built into the renderers rather than the captions:
+  - bars below min_sample are greyed and labelled (n=2)
+  - simulated series are amber, zero-based, and uniformly coloured
+  - a reference_line makes flatness legible instead of leaving the eye to
+    find "peaks" in sampling noise
+
 Run:  python run.py export
 """
 
@@ -65,6 +71,13 @@ def _bar_colors(spec: dict, df: pd.DataFrame) -> list[str]:
     """Highlight logic, applied identically in both renderers."""
     x, y = spec["x"], spec["y"]
     weak = _low_sample(spec, df)
+
+    # Simulated bars are uniformly amber. Highlighting individual bars would
+    # single out months that differ from each other only by sampling noise,
+    # which is exactly the misreading these charts exist to prevent.
+    if spec.get("simulated"):
+        return [CS.COLORS["warning"]] * len(df)
+
     colors = []
     for i, (_, row) in enumerate(df.iterrows()):
         if weak[i]:
@@ -199,6 +212,21 @@ def render_matplotlib(name: str, stamp: bool = False,
     if spec.get("y_max"):
         ax.set_ylim(0, spec["y_max"])
 
+    # --- reference line -------------------------------------------------
+    # Makes flatness legible. Without it the eye compares bars to each other
+    # and finds "peaks" in what is sampling noise; with it, every bar is
+    # visibly close to the same value.
+    ref = spec.get("reference_line")
+    if ref and not df.empty:
+        ax.axhline(ref["value"], color=CS.COLORS["text"], linestyle="--",
+                   linewidth=1.2, alpha=0.7)
+        # Label sits ABOVE the bars, not on the line, or it collides with
+        # the value labels of whichever bars happen to sit near the mean.
+        ax.text(0.99, ref["value"] / ax.get_ylim()[1] + 0.06, ref["label"],
+                transform=ax.transAxes, fontsize=8.5,
+                color=CS.COLORS["text"], va="bottom", ha="right",
+                bbox=dict(facecolor="white", edgecolor="none", pad=2))
+
     ax.set_title(spec["title"], fontsize=13, fontweight="bold",
                  color=CS.COLORS["text"], loc="left", pad=34)
     if spec.get("subtitle"):
@@ -211,16 +239,17 @@ def render_matplotlib(name: str, stamp: bool = False,
     ax.set_axisbelow(True)
 
     footer = spec.get("caption", "")
-    if any(_low_sample(spec, df)):
+    if any(_low_sample(spec, df)) and not spec.get("simulated"):
         footer = (footer + f"  Greyed bars have fewer than "
                   f"{spec['min_sample']} customers and are too small to "
                   f"read as evidence.").strip()
     if stamp:
         footer = (footer + "\n" + _stamp()).strip()
     if footer:
-        # Rotated tick labels push the axis label down, so line charts need
-        # the caption further clear or the two collide.
-        offset = -0.14 if kind == "line" else -0.02
+        # Rotated tick labels push the axis label down, so line charts and
+        # date-labelled bars need the caption further clear or they collide.
+        rotated = kind == "line" or (kind == "bar" and len(df) > 6)
+        offset = -0.14 if rotated else -0.02
         fig.text(0.01, offset, footer, fontsize=8, color="#8A94A6",
                  wrap=True, va="top")
 
@@ -301,6 +330,15 @@ def render_plotly(name: str, full_html: bool = False) -> str:
     )
     if spec.get("y_max"):
         fig.update_yaxes(range=[0, spec["y_max"]])
+
+    ref = spec.get("reference_line")
+    if ref:
+        fig.add_hline(y=ref["value"], line_dash="dash",
+                      line_color=CS.COLORS["text"],
+                      annotation_text=ref["label"],
+                      annotation_position="top right",
+                      annotation_font_size=10)
+
     if spec.get("caption"):
         fig.add_annotation(text=spec["caption"], xref="paper", yref="paper",
                            x=0, y=-0.28, showarrow=False, align="left",
@@ -359,6 +397,12 @@ def explain(name: str) -> dict:
         payload["meta"]["simulation_note"] = (
             "This history is generated, not observed. Churn in it is flat "
             "by construction; any variation is sampling noise.")
+
+    # A reference line is part of what the reader sees, so the model must
+    # know about it or it may describe bars as differing from each other
+    # when the chart shows them clustered around a mean.
+    if spec.get("reference_line"):
+        payload["reference_line"] = spec["reference_line"]
 
     weak = _low_sample(spec, df)
     if any(weak):

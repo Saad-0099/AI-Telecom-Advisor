@@ -305,7 +305,8 @@ def section_structure() -> dict | None:
     active = [r["active_customers"] for r in rows]
     revenue = [r["revenue"] for r in rows]
 
-    chart_names = ["sim_monthly_structure", "sim_monthly_revenue"]
+    chart_names = ["sim_monthly_structure", "sim_monthly_revenue",
+                   "sim_monthly_churn"]
 
     return {
         "id": "structure",

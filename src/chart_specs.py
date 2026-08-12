@@ -363,6 +363,53 @@ CHART_SPECS = {
     # ----------------------------------------------------------------------
     # SIMULATED history (Phase 6.5). Structure only — never churn.
     # ----------------------------------------------------------------------
+    "sim_monthly_churn": {
+        "title": "Monthly churn is FLAT by construction (simulated)",
+        "subtitle": ("Drawn to demonstrate the ABSENCE of a trend. Bars, not "
+                     "a line — a line would imply a trajectory that is not "
+                     "in this data."),
+        "metric": "sim_monthly_portfolio",
+        # Bars, deliberately. A line chart of this series reads as a
+        # trajectory: the eye connects the points and starts explaining the
+        # peaks. Bars read as independent categories, which is what these
+        # months actually are once churn timing has been generated.
+        "kind": "bar",
+        "x": "snapshot_month",
+        "y": "churn_rate_pct",
+        "x_label": "Month",
+        "y_label": "Monthly churn rate (%)",
+        # Fixed scale. Autoscaling a 2.5-point spread fills the frame and
+        # turns sampling noise into a dramatic-looking pattern.
+        "y_max": 20,
+        "reference_line": {
+            "value": 3.49,
+            "label": "mean 3.49%",
+        },
+        "sample_size_col": "active_customers",
+        "min_sample": 50,
+        "simulated": True,
+        "explain_focus": (
+            "You MUST state that this history is simulated. The POINT of "
+            "this chart is that there is NO pattern: every bar sits close "
+            "to the mean and the variation between months is sampling "
+            "noise from the generator, not customer behaviour. Say that "
+            "explicitly. Do NOT describe any month as better or worse than "
+            "another, do NOT identify a highest or lowest month, and do NOT "
+            "suggest any action based on month-to-month differences."
+        ),
+        "hypotheses": [
+            "an absence of pattern is itself informative here: it confirms "
+            "the generator did not encode a trend the source data could "
+            "not support",
+        ],
+        "caption": ("Included to demonstrate the absence of a trend, not to "
+                    "show one. Churn timing in this panel was generated; a "
+                    "different random seed would produce a different "
+                    "arrangement of the same flat distribution. Real churn "
+                    "movement over time cannot be measured from a single "
+                    "snapshot."),
+    },
+    
     "sim_monthly_structure": {
         "title": "Active customers by month (simulated history)",
         "subtitle": ("SIMULATED. Shows portfolio shape only — churn in this "
