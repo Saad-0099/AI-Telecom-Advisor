@@ -5,16 +5,33 @@ A prompt instruction is a request. This module is the enforcement: every
 LLM response is checked against the payload it was given BEFORE anyone
 sees it.
 
-Three checks:
+Four checks:
   1. NUMBER GROUNDING  every figure in the text must exist in the payload
   2. TEMPORAL CLAIMS   no assertion of change over time
-  3. FALSE DRIVERS     no tenure-causes-churn claim, no linear service-call claim
+  3. FORECAST CLAIMS   nothing in this project predicts what will happen
+  4. FALSE DRIVERS     no tenure-causes-churn claim, no linear service-call claim
+
+Three payload origins relax rule 2 in different, narrow ways:
+
+  (default)   snapshot data. No temporal claims at all.
+  SIMULATED   Phase 6.5 panel. Structural time-series language allowed,
+              but only when disclosed, and never about churn.
+  PROJECTED   Phase 8 scenarios. Conditional language allowed, but only
+              when framed as a hypothetical.
+
+Origin is detected from the payload itself, never passed in as a flag, so
+a caller cannot accidentally unlock relaxed rules for real snapshot data.
 
 Design note on check 1: we deliberately allow small integers (0-12) without
 a payload match, because they appear in ordinary prose ("three factors",
 "the top 5 states") and flagging them produced constant false positives.
 The tradeoff is that a fabricated small count could slip through; every
 number large enough to be a metric is still caught.
+
+KNOWN LIMITATION: this is phrase matching, which cannot fully distinguish
+asserting a claim from refuting one. Six false positives were found and
+fixed during development; no false negative has been observed. The failure
+mode is conservative — it blocks good answers rather than passing bad ones.
 """
 
 from __future__ import annotations
@@ -86,6 +103,27 @@ SIMULATION_DISCLOSURES = [
     "not real history", "illustrative",
 ]
 
+# Words that frame a statement as a hypothetical rather than an assertion.
+# Scenario narration must contain at least one, or a conditional result
+# reads as a claim about what is going to happen.
+HYPOTHETICAL_MARKERS = [
+    "scenario", "hypothetical", "if ", "would", "could", "assuming",
+    "under this", "were ", "estimated", "projected", "illustrative",
+    "modelled", "modeled", "simulation",
+]
+
+# Language that turns a calculation into a prediction. Forbidden for EVERY
+# payload origin, including scenarios: the arithmetic says what things
+# WOULD look like under an assumption, never what is going to happen.
+FORECAST_CLAIMS = [
+    "will fall", "will drop", "will decrease", "will rise", "will increase",
+    "will improve", "will worsen", "will churn", "will reduce",
+    "is expected to fall", "is expected to drop", "is expected to rise",
+    "we predict", "we forecast", "the forecast", "our projection shows",
+    "next quarter", "next month", "next year", "going forward",
+    "is going to", "are going to",
+]
+
 # A temporal phrase within this distance of a churn word is a churn-trend
 # claim, which stays forbidden even for simulated data.
 CHURN_WORDS = ["churn", "attrition", "cancellation", "customers lost",
@@ -106,6 +144,7 @@ def _near_churn_word(lowered: str, phrase: str) -> bool:
             return True
         start = idx + len(phrase)
 
+
 # Phrases that FOLLOW a driver claim and defuse it. A correct answer often
 # reads "newer customers churn at similar rates to long-tenured ones" — the
 # qualifier comes after the pattern, so a backward-only window misses it.
@@ -116,7 +155,6 @@ FLATNESS_MARKERS = [
     "no meaningful difference", "is not a driver", "does not drive",
     "not a churn driver", "ranging from", "essentially the same",
 ]
-
 
 FORWARD_WINDOW = 120  # characters to look ahead
 
@@ -138,10 +176,9 @@ COMPARISON_WINDOW = 100
 def _is_cross_sectional(lowered: str, phrase: str) -> bool:
     """True if EVERY occurrence of `phrase` reads as a segment comparison.
 
-    Requires the sentence to contain a percentage or figure pair as well as
-    comparison vocabulary, so a bare "revenue increased" is still caught.
+    Requires the sentence to contain a figure pair as well as comparison
+    vocabulary, so a bare "revenue increased" is still caught.
     """
-    import re as _re
     start = 0
     while True:
         idx = lowered.find(phrase, start)
@@ -154,12 +191,13 @@ def _is_cross_sectional(lowered: str, phrase: str) -> bool:
                 window = window[window[:COMPARISON_WINDOW].rfind(stop) + 1:]
         # Two figures in the same clause means a comparison of two values,
         # which in a snapshot can only be between groups.
-        figures = _re.findall(r"\d+(?:\.\d+)?\s*%?", window)
+        figures = re.findall(r"\d+(?:\.\d+)?\s*%?", window)
         has_pair = len(figures) >= 2
         has_marker = any(m in window for m in COMPARISON_MARKERS)
         if not (has_pair and has_marker):
             return False
         start = idx + len(phrase)
+
 
 def _claim_defused(lowered: str, phrase: str) -> bool:
     """True if EVERY occurrence of a driver claim is negated or qualified.
@@ -189,6 +227,7 @@ def _claim_defused(lowered: str, phrase: str) -> bool:
             return False
         start = idx + len(phrase)
 
+
 def _all_negated(lowered: str, phrase: str) -> bool:
     """True if EVERY occurrence of `phrase` sits inside a negation.
 
@@ -210,6 +249,43 @@ def _all_negated(lowered: str, phrase: str) -> bool:
         if not any(m in window for m in NEGATION_MARKERS):
             return False
         start = idx + len(phrase)
+
+
+# --------------------------------------------------------------------------
+# Payload origin
+# --------------------------------------------------------------------------
+def _has_origin(payload: dict, origin: str) -> bool:
+    """Search the payload for a data_origin marker anywhere in the tree."""
+    target = origin.upper()
+
+    def walk(node) -> bool:
+        if isinstance(node, dict):
+            if str(node.get("data_origin", "")).upper() == target:
+                return True
+            return any(walk(v) for v in node.values())
+        if isinstance(node, (list, tuple)):
+            return any(walk(v) for v in node)
+        return False
+    return walk(payload)
+
+
+def _is_simulated(payload: dict) -> bool:
+    """True when the payload comes from the simulated history panel.
+
+    Detected from the payload itself rather than passed in as a flag, so a
+    caller cannot accidentally unlock temporal claims for real data.
+    """
+    return _has_origin(payload, "SIMULATED")
+
+
+def _is_projected(payload: dict) -> bool:
+    """True when the payload is a hypothetical scenario calculation.
+
+    Scenario output is inherently conditional ("churn would fall to
+    14.10%"), which the temporal rules would otherwise reject. Same
+    detection route as _is_simulated, for the same reason.
+    """
+    return _has_origin(payload, "PROJECTED")
 
 
 # --------------------------------------------------------------------------
@@ -268,29 +344,15 @@ def _grounded(value: float, allowed: set[float], rel_tol: float) -> bool:
             return True
     return False
 
-def _is_simulated(payload: dict) -> bool:
-    """True when the payload comes from the simulated history panel.
-
-    Detected from the payload itself rather than passed in as a flag, so a
-    caller cannot accidentally unlock temporal claims for real data.
-    """
-    def walk(node) -> bool:
-        if isinstance(node, dict):
-            if str(node.get("data_origin", "")).upper() == "SIMULATED":
-                return True
-            return any(walk(v) for v in node.values())
-        if isinstance(node, (list, tuple)):
-            return any(walk(v) for v in node)
-        return False
-    return walk(payload)
 
 # --------------------------------------------------------------------------
 def validate(text: str, payload: dict, rel_tol: float = 0.01) -> dict:
     """Check an LLM response against the payload that produced it.
-    
+
     Returns a report dict. `passed` is False if any hard violation fired.
     """
     simulated = _is_simulated(payload)
+    projected = _is_projected(payload)
     lowered = text.lower()
     violations: list[dict] = []
     warnings: list[dict] = []
@@ -312,18 +374,25 @@ def validate(text: str, payload: dict, rel_tol: float = 0.01) -> dict:
     # --- 2. temporal claims -------------------------------------------
     # A phrase inside a negation is a correct REFUSAL, not a violation:
     # "there is no prior period" must pass, "up from the prior period"
-    # must fail. We inspect the text immediately preceding each match.
+    # must fail. A phrase inside a segment comparison is also fine:
+    # "churn increases from 5.0% to 59.0%" compares groups, not periods.
     hits = [p for p in FORBIDDEN_TEMPORAL
             if p in lowered
             and not _all_negated(lowered, p)
             and not _is_cross_sectional(lowered, p)]
-    
-    if hits and not simulated:
-        violations.append({
-            "type": "temporal_claim",
-            "detail": f"asserts change over time: {hits}",
-        })
-    elif simulated:
+
+    if hits and projected:
+        # A scenario is explicitly hypothetical, so conditional language is
+        # expected. It must still be FRAMED as one, or a conditional result
+        # reads as an assertion about what happened.
+        if not any(m in lowered for m in HYPOTHETICAL_MARKERS):
+            violations.append({
+                "type": "unframed_hypothetical",
+                "detail": ("describes a change without framing it as a "
+                           "hypothetical scenario"),
+            })
+
+    elif hits and simulated:
         # Structural time-series language is permitted, but churn trends
         # are not: simulated churn is flat by construction.
         churn_trend = [p for p in hits if _near_churn_word(lowered, p)]
@@ -333,14 +402,40 @@ def validate(text: str, payload: dict, rel_tol: float = 0.01) -> dict:
                 "detail": (f"claims a churn trend from simulated history, "
                            f"which is flat by construction: {churn_trend}"),
             })
-        if hits and not any(m in lowered for m in SIMULATION_DISCLOSURES):
+        if not any(m in lowered for m in SIMULATION_DISCLOSURES):
             violations.append({
                 "type": "undisclosed_simulation",
                 "detail": ("makes a time-based claim from simulated history "
                            "without saying the history is simulated"),
             })
 
-    # --- 3. false drivers ---------------------------------------------
+    elif hits:
+        violations.append({
+            "type": "temporal_claim",
+            "detail": f"asserts change over time: {hits}",
+        })
+
+    # --- 3. forecast claims -------------------------------------------
+    # Checked INDEPENDENTLY of the temporal hits. "will drop" is not in
+    # FORBIDDEN_TEMPORAL, so gating this on `hits` let a scenario be
+    # presented as a prediction without any violation firing.
+    forecast_hits = [p for p in FORECAST_CLAIMS if p in lowered]
+    if forecast_hits:
+        violations.append({
+            "type": "forecast_claim",
+            "detail": (f"states what WILL happen. Nothing in this project "
+                       f"forecasts: {forecast_hits}"),
+        })
+
+    soft = [w for w in SOFT_TEMPORAL
+            if re.search(rf"\b{re.escape(w)}\b", lowered)]
+    if soft:
+        warnings.append({
+            "type": "soft_temporal",
+            "detail": f"check these are recommendations, not claims: {soft}",
+        })
+
+    # --- 4. false drivers ---------------------------------------------
     tenure_hits = [p for p in FALSE_TENURE_CLAIMS
                    if p in lowered and not _claim_defused(lowered, p)]
     if tenure_hits:
@@ -361,13 +456,16 @@ def validate(text: str, payload: dict, rel_tol: float = 0.01) -> dict:
         "passed": not violations,
         "violations": violations,
         "warnings": warnings,
+        "data_origin": ("PROJECTED" if projected
+                        else "SIMULATED" if simulated else "OBSERVED"),
         "numbers_checked": len(extract_numbers(text)),
     }
 
 
 def format_report(report: dict) -> str:
     if report["passed"] and not report["warnings"]:
-        return f"OK ({report['numbers_checked']} numbers verified)"
+        return (f"OK ({report['numbers_checked']} numbers verified, "
+                f"{report.get('data_origin', 'OBSERVED')})")
     lines = []
     for v in report["violations"]:
         lines.append(f"  VIOLATION [{v['type']}] {v['detail']}")

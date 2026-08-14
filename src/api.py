@@ -297,3 +297,46 @@ def sim_monthly_revenue():
 def sim_tenure_curve():
     """Lifecycle view — the legitimate use of the panel."""
     return metrics.sim_tenure_curve()
+
+
+# ==========================================================================
+# Phase 8 — scenario analysis
+# ==========================================================================
+import scenario
+
+
+@app.get("/scenario/levers", tags=["scenario"])
+def scenario_levers():
+    """The available levers and their bounds."""
+    return {"levers": scenario.list_levers(),
+            "efficacy_assumptions": scenario.EFFICACY}
+
+
+@app.get("/scenario/run", tags=["scenario"])
+def scenario_run(
+    lever: str = Query(..., description="lever id from /scenario/levers"),
+    pct: float = Query(30.0, gt=0, le=50),
+):
+    """Hypothetical calculation, banded across the efficacy range."""
+    try:
+        return scenario.run_scenario(lever, pct)
+    except scenario.ScenarioError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.get("/scenario/compare", tags=["scenario"])
+def scenario_compare(pct: float = Query(30.0, gt=0, le=50)):
+    """All levers at one magnitude, ranked by central net value."""
+    return scenario.compare_levers(pct)
+
+
+@app.get("/scenario/narrate", tags=["scenario"])
+def scenario_narrate(
+    lever: str = Query(...),
+    pct: float = Query(30.0, gt=0, le=50),
+):
+    """Scenario with an LLM explanation, validated."""
+    try:
+        return scenario.narrate(lever, pct)
+    except scenario.ScenarioError as exc:
+        raise HTTPException(400, str(exc))

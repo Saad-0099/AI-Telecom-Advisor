@@ -11,8 +11,10 @@ Usage:
     python run.py views            build the SQL views
     python run.py check            run every offline check suite
     python run.py api              start the FastAPI server
+    python run.py ui               start the Streamlit interface
     python run.py charts           list available charts
     python run.py export           write chart PNGs to exports/
+    python run.py report           generate the PDF report into exports/
     python run.py evals [--live]   guardrail evals
     python run.py sqlevals [--live|--compare]
     python run.py all              full rebuild + all offline checks
@@ -33,6 +35,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parent
 SRC = ROOT / "src"
 TESTS = ROOT / "tests"
+APP = ROOT / "app"
 sys.path.insert(0, str(SRC))
 
 
@@ -60,6 +63,7 @@ def cmd_check(args) -> int:
         ("Phase 4 — guardrails", TESTS / "evals.py"),
         ("Phase 5 — SQL guard", TESTS / "sql_evals.py"),
         ("Phase 7 — report", TESTS / "checks_report.py"),
+        ("Phase 8 — scenarios", TESTS / "checks_scenario.py"),
     ]
     failed = []
     for label, script in suites:
@@ -82,11 +86,29 @@ def cmd_api(args) -> int:
     return 0
 
 
+def cmd_ui(args) -> int:
+    """Launch the Streamlit interface.
+
+    Run through streamlit's own module rather than importing it, so the
+    app gets a proper script-run context. Extra args pass straight
+    through, e.g. `python run.py ui --server.port 8600`.
+    """
+    entry = APP / "app.py"
+    if not entry.exists():
+        print(f"Streamlit app not found at {entry}")
+        return 1
+    print("Starting the interface on http://localhost:8501")
+    return subprocess.call(
+        [sys.executable, "-m", "streamlit", "run", str(entry), *args],
+        cwd=str(ROOT))
+
+
 def cmd_charts(args) -> int:
     import chart_specs
     problems = chart_specs.validate_specs()
     for c in chart_specs.list_charts():
-        print(f"  {c['id']:<26} {c['kind']:<13} {c['title']}")
+        tag = "  [SIMULATED]" if c.get("simulated") else ""
+        print(f"  {c['id']:<26} {c['kind']:<13} {c['title']}{tag}")
     if problems:
         print("\nSPEC PROBLEMS:")
         for p in problems:
@@ -122,11 +144,12 @@ COMMANDS = {
     "views": cmd_views,
     "check": cmd_check,
     "api": cmd_api,
+    "ui": cmd_ui,
     "charts": cmd_charts,
     "export": cmd_export,
+    "report": cmd_report,
     "evals": cmd_evals,
     "sqlevals": cmd_sqlevals,
-    "report": cmd_report,
     "all": cmd_all,
 }
 
