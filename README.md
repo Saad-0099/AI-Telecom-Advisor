@@ -102,39 +102,80 @@ Asked *"How did churn change compared to last quarter?"*, the system
 generates `SELECT 'no time dimension' AS answer FROM v_kpi_summary LIMIT 1`
 and explains why no comparison is possible.
 
----
+## 🏗️ Project Architecture
 
-## Architecture
-
-telecom_churn.csv
-│
-▼
-etl.py ──────────────► 6 normalised tables (no date columns)
-│ │
-│ ▼
-│ simulate_history.py ──► customer_snapshot_simulated
-│ (SIMULATED, flat by design)
-▼
-views.sql ───────────► 12 real views + 4 simulated views
-│
-▼
-metrics.py ──────────► JSON payloads carrying provenance metadata
-│
-┌───┴──────────┬──────────────┬───────────────┬──────────────┐
-▼ ▼ ▼ ▼ ▼
-charts.py recommend.py scenario.py text_to_sql.py report_pdf.py
-(2 renderers) (rules engine) (what-if) (NL → SQL) (PDF)
-│ │ │ │ │
-└──────────────┴──────┬───────┴───────────────┴──────────────┘
-▼
-narrate.py · LLM explains, never computes
-▼
-guardrails.py · every figure checked
-▼
-FastAPI (api.py) + Streamlit (app/)
-
-
----
+```text
+                    ┌──────────────────────┐
+                    │  telecom_churn.csv   │
+                    │   Source Dataset     │
+                    └──────────┬───────────┘
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │       etl.py         │
+                    │  Data Cleaning & ETL  │
+                    └──────────┬───────────┘
+                               │
+                ┌──────────────┴──────────────┐
+                ▼                             ▼
+     ┌─────────────────────┐       ┌────────────────────────┐
+     │ 6 Normalized Tables │       │ simulate_history.py    │
+     │   Observed Data     │       │ Synthetic Time History │
+     │   (No dates)        │       └───────────┬────────────┘
+     └──────────┬──────────┘                   │
+                │                              ▼
+                │                  ┌────────────────────────┐
+                │                  │ customer_snapshot_     │
+                │                  │ simulated               │
+                │                  │      SIMULATED          │
+                │                  └───────────┬────────────┘
+                │                              │
+                └──────────────┬───────────────┘
+                               ▼
+                    ┌──────────────────────┐
+                    │      views.sql       │
+                    │ 12 Observed Views    │
+                    │ 4 Simulated Views    │
+                    └──────────┬───────────┘
+                               ▼
+                    ┌──────────────────────┐
+                    │     metrics.py       │
+                    │  Validated JSON      │
+                    │  + Provenance        │
+                    └──────────┬───────────┘
+                               │
+          ┌────────────────────┼────────────────────┐
+          ▼                    ▼                    ▼
+   ┌─────────────┐      ┌─────────────┐      ┌─────────────┐
+   │  charts.py  │      │recommend.py │      │ scenario.py │
+   │ Visualize   │      │ Rules Engine│      │  What-If    │
+   └─────────────┘      └─────────────┘      └─────────────┘
+          │                    │                    │
+          └────────────────────┼────────────────────┘
+                               ▼
+                    ┌──────────────────────┐
+                    │   AI / Query Layer   │
+                    │                      │
+                    │ text_to_sql.py       │
+                    │ NL → SQL             │
+                    │                      │
+                    │ narrate.py           │
+                    │ LLM → Explanation    │
+                    └──────────┬───────────┘
+                               ▼
+                    ┌──────────────────────┐
+                    │     guardrails.py    │
+                    │ Figure & Claim       │
+                    │ Validation           │
+                    └──────────┬───────────┘
+                               ▼
+                 ┌─────────────┴─────────────┐
+                 ▼                           ▼
+        ┌─────────────────┐         ┌─────────────────┐
+        │    FastAPI      │         │    Streamlit    │
+        │     api.py      │         │      app/       │
+        │   REST API      │         │  User Interface │
+        └─────────────────┘         └─────────────────┘
 
 ## Setup
 
