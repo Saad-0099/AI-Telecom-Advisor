@@ -73,17 +73,38 @@ OPEN_THINK_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+# Reasoning models wrap deliberation in tags before the answer. Those blocks
+# contain words like "select" in ordinary prose ("I will select the risk
+# segments view"), so they must be removed BEFORE any statement extraction
+# or the extractor slices out English instead of SQL. This is what produced
+# 0/20 when Qwen 3.6 was benchmarked; GPT OSS 120B also lists `reasoning`
+# among its supported features.
+THINK_RE = re.compile(
+    r"<(think|thinking|reasoning|analysis|scratchpad)>.*?</\1>",
+    re.IGNORECASE | re.DOTALL,
+)
+# Unterminated block: the response was truncated mid-thought.
+OPEN_THINK_RE = re.compile(
+    r"<(think|thinking|reasoning|analysis|scratchpad)>.*$",
+    re.IGNORECASE | re.DOTALL,
+)
+
 def strip_markdown(sql: str) -> str:
-    """Models wrap SQL in reasoning traces, code fences and prose."""
+    """Pull the statement out of reasoning traces, code fences and prose.
+
+    Order matters: reasoning blocks first, then a fenced ```sql block if one
+    survives (the model's own signal of where the statement is, and more
+    reliable than keyword scanning), and only then a scan for the first
+    SELECT as a last resort.
+    """
     sql = THINK_RE.sub(" ", sql)
     sql = OPEN_THINK_RE.sub(" ", sql)
     sql = FENCE_RE.sub("", sql.strip())
-    # Prefer a fenced ```sql block if one survives — that is the model's
-    # own signal of where the statement is, and is more reliable than
-    # scanning for the first SELECT keyword.
+
     fenced = re.search(r"```sql\s*(.+?)```", sql, re.IGNORECASE | re.DOTALL)
     if fenced:
         sql = fenced.group(1)
+
     m = re.search(r"\b(select|with)\b", sql, re.IGNORECASE)
     if m:
         sql = sql[m.start():]

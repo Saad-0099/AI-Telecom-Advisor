@@ -101,9 +101,12 @@ SECTION_INSTRUCTIONS = {
     ),
     "drivers": (
         "Explain the three confirmed churn drivers to a non-technical "
-        "manager. For each, say what the threshold is and how much churn "
-        "changes across it. Emphasise that all three are thresholds rather "
-        "than gradual trends, and why that matters for targeting."
+        "manager. For each, quote the two rates given in the data — the "
+        "rate below the threshold and the rate above it — and name the "
+        "threshold. Do NOT compute the difference between them or state a "
+        "gap in percentage points: use only figures that appear in the "
+        "DATA block. Emphasise that all three are thresholds rather than "
+        "gradual trends, and why that matters for targeting."
     ),
     "recommendations": (
         "Brief a retention manager on these segments. For each actionable "

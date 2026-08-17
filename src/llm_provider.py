@@ -54,10 +54,10 @@ GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/chat")
 
-TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.2"))  # low: we want facts
+TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.1"))  # low: we want facts
 
 # Default budget, used when no role is specified.
-MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "700"))
+MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "1200"))
 
 TIMEOUT_S = int(os.getenv("LLM_TIMEOUT", "120"))
 
@@ -74,7 +74,7 @@ ROLE_MODELS = {
 # 3.6 at 700 tokens produced 0/20 for exactly this reason.
 ROLE_MAX_TOKENS = {
     "narration": MAX_TOKENS,
-    "sql": int(os.getenv("LLM_SQL_MAX_TOKENS", "1000")),
+    "sql": int(os.getenv("LLM_SQL_MAX_TOKENS", "2500")),
 }
 
 # Groq's free tier is limited by TOKENS per minute, not just requests. The
@@ -221,9 +221,15 @@ class GroqProvider(Provider):
                         "Cloudflare blocked the client signature (403/1010)."
                     ) from exc
                 if exc.code == 404:
+                    # Providers decommission models on their own schedule;
+                    # Groq retired Llama 3.3 70B on 16 Aug 2026 with about
+                    # two weeks' notice. This is a config problem, not a
+                    # code problem, so say exactly which line to edit.
                     raise LLMError(
                         f"Groq does not recognise model '{self.model}' (404). "
-                        f"Check the name against /v1/models."
+                        f"The model may have been decommissioned. List the "
+                        f"live models at https://api.groq.com/openai/v1/models "
+                        f"and update GROQ_MODEL / GROQ_SQL_MODEL in .env."
                     ) from exc
                 if exc.code != 429:
                     raise LLMError(f"Groq HTTP {exc.code}: {detail}") from exc
@@ -246,14 +252,14 @@ class GroqProvider(Provider):
         except (KeyError, IndexError) as exc:
             raise LLMError(f"Unexpected Groq response shape: {data}") from exc
 
-        # Surface truncation explicitly. Without this a cut-off response
-        # reaches the SQL guard as a fragment and fails with a confusing
-        # "unrecognized token" error that sends you hunting the wrong bug.
+        # A reasoning model that runs out of budget mid-thought returns a
+        # fragment, which reaches the SQL guard as "unrecognized token" and
+        # sends you hunting the wrong bug. Name the real cause.
         if choice.get("finish_reason") == "length":
-            raise Truncated(
+            raise LLMError(
                 f"Response truncated at {self.max_tokens} tokens "
-                f"(model '{self.model}'). Raise LLM_SQL_MAX_TOKENS if this "
-                f"is a reasoning model.")
+                f"(model '{self.model}'). If this is a reasoning model, "
+                f"raise LLM_SQL_MAX_TOKENS in .env.")
 
         return choice["message"]["content"].strip()
 

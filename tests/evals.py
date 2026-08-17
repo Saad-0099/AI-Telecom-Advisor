@@ -52,6 +52,7 @@ SAMPLE = {
         "churn_rate_pct": 14.49,
         "total_revenue": 198146.03,
         "arpu": 59.45,
+        "revenue_at_risk": 31566.93,
     },
     "buckets": [
         {"service_call_bucket": "0-3", "churn_rate_pct": 11.25},
@@ -94,6 +95,22 @@ CASES = [
 
     ("temporal claim caught (increased)",
      "Churn increased to 14.49% this period.", False),
+
+    ("thousands with decimal, no currency symbol (regression)",
+     "Revenue at risk is 31,566.93 across the portfolio.", True),
+
+    ("live: requirement framing, not a claim (regression)",
+     "The data set is a single-snapshot view and contains no figures for a "
+     "prior quarter. To assess change over time you would need churn "
+     "metrics from an earlier period.", True),
+
+    ("requirement framing does not excuse a real claim",
+     "To assess change over time you would need a prior period. Revenue "
+     "increased to 198146.03.", False),
+
+    ("narrow no-break space between figure and unit (regression)",
+     "The churn rate stands at\u202f14.49%, exposing\u202f31,566.93\u202f"
+     "of revenue.", True),
 
     ("temporal claim caught (up from)",
      "Churn is 14.49%, up from 12.1% previously.", False),

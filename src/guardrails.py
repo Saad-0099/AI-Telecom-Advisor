@@ -75,8 +75,17 @@ FALSE_SLOPE_CLAIMS = [
     "the more calls, the higher", "rises steadily with",
 ]
 
-NUMBER_RE = re.compile(r"\$?\s*(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)\s*%?")
-
+# The thousands-group branch MUST allow a trailing decimal, or "31,566.93"
+# is matched as "31,566" and the regex then starts fresh at ".93",
+# producing a phantom 93 that no payload contains. Llama wrote "$31,566.93"
+# and happened not to trigger it; GPT OSS omits the currency symbol and
+# does. \u202f (narrow no-break space) is included in the separator class
+# because GPT OSS uses it between a figure and its unit.
+NUMBER_RE = re.compile(
+    r"\$?[\s\u202f\u00a0]*"
+    r"(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)"
+    r"[\s\u202f\u00a0]*%?"
+)
 SMALL_INT_ALLOWANCE = 12   # see module docstring
 
 NEGATION_MARKERS = [
@@ -171,6 +180,37 @@ COMPARISON_MARKERS = [
 ]
 
 COMPARISON_WINDOW = 100
+
+# Phrases that make a temporal word part of a REQUIREMENT rather than a
+# claim. "To assess change over time you would need a prior period" states
+# what would be necessary; it asserts nothing about what happened. The
+# negation that licenses it usually sits in the preceding sentence, so
+# _all_negated's sentence clamping cannot see it.
+REQUIREMENT_MARKERS = [
+    "you would need", "would require", "would need", "to assess",
+    "to determine", "to measure", "to calculate", "in order to",
+    "we would need", "requires ", "is needed", "are needed",
+    "would have to", "cannot show whether", "cannot be calculated",
+]
+
+REQUIREMENT_WINDOW = 120
+
+
+def _is_requirement(lowered: str, phrase: str) -> bool:
+    """True if EVERY occurrence of `phrase` sits inside a requirement.
+
+    Checks backwards only: the requirement framing always precedes the
+    temporal word ("to assess change over time...").
+    """
+    start = 0
+    while True:
+        idx = lowered.find(phrase, start)
+        if idx == -1:
+            return True
+        back = lowered[max(0, idx - REQUIREMENT_WINDOW):idx]
+        if not any(m in back for m in REQUIREMENT_MARKERS):
+            return False
+        start = idx + len(phrase)
 
 
 def _is_cross_sectional(lowered: str, phrase: str) -> bool:
@@ -379,7 +419,8 @@ def validate(text: str, payload: dict, rel_tol: float = 0.01) -> dict:
     hits = [p for p in FORBIDDEN_TEMPORAL
             if p in lowered
             and not _all_negated(lowered, p)
-            and not _is_cross_sectional(lowered, p)]
+            and not _is_cross_sectional(lowered, p)
+            and not _is_requirement(lowered, p)]
 
     if hits and projected:
         # A scenario is explicitly hypothetical, so conditional language is
