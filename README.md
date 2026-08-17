@@ -1,4 +1,3 @@
-markdown
 # Telecom Decision Intelligence Platform
 
 An LLM-powered decision support system built on telecom customer data.
@@ -7,7 +6,7 @@ answers *why*, *what to do next*, and *which customers to target* — with
 every number computed in SQL and verified before it reaches the user.
 
 **Stack:** Python 3.13 · pandas · SQLAlchemy · SQLite · FastAPI · Streamlit
-· Groq (Llama 3.3 70B)
+· matplotlib · Plotly · ReportLab · Groq (GPT OSS 120B)
 
 ---
 
@@ -30,19 +29,19 @@ what makes the output trustworthy.
 ## Three kinds of number, marked differently
 
 The platform never lets these blur together. The distinction is carried by
-colour, badge and banner in the UI, by dagger and tinted rows in the PDF,
-and by a `data_origin` marker inside every payload.
+colour and badge in the UI, by dagger and tinted rows in the PDF, and by a
+`data_origin` marker inside every payload — which the guardrail reads to
+decide which rules apply.
 
-| | Meaning | UI colour |
+| | Meaning | Colour |
 |---|---|---|
 | **OBSERVED** | measured from the source data | blue |
 | **SIMULATED** | generated history; structure only, churn flat by construction | amber |
 | **PROJECTED** | hypothetical, resting on stated assumptions | violet |
 
-The guardrail validator enforces this at generation time: a temporal claim
-from simulated data is rejected unless the prose itself discloses the
-simulation, and a scenario result is rejected unless framed as a
-hypothetical.
+Enforcement is structural, not documentary: a temporal claim from simulated
+data is rejected unless the prose itself discloses the simulation, and a
+scenario result is rejected unless framed as a hypothetical.
 
 ---
 
@@ -54,29 +53,40 @@ hypothetical.
 |---|---|---|---|---|
 | Customer service calls | 4 or more | 11.3% | **51.7%** | 267 |
 | International plan | subscribed | 11.5% | **42.4%** | 323 |
-| Daytime charge | ≥ $45 | ~11% | **60.0%** | 210 |
+| Daytime charge | >= $45 | 11.4% | **60.0%** | 210 |
 
 All three are thresholds. Modelling any of them as a linear predictor finds
 almost nothing — day charge in particular *dips* from 11.6% to 8.1% before
 exploding at $45.
 
+The third driver was not found by inspection. It surfaced in Phase 6 when a
+rule intended to identify a *safe* high-spend segment returned 73% churn.
+Phase 2's original segmentation had reported a "baseline" of 8.2% — a figure
+that was concealing 166 customers churning at 59%.
+
 **2. A six-segment risk model falls out of those drivers.**
 
-| Segment | Customers | Churn % |
-|---|---|---|
-| Critical — all three drivers | 1 | 100.0% |
-| Severe — 4+ calls plus a second driver | 42 | 66.7% |
-| Severe — heavy daytime usage | 194 | 59.3% |
-| High — 4+ service calls only | 224 | 48.7% |
-| Elevated — international plan only | 267 | 37.8% |
-| Baseline — no drivers | 2,605 | 5.0% |
+| Segment | Customers | Churn % | Revenue at risk |
+|---|---|---|---|
+| Critical — all three drivers | 1 | 100.0% | $82 |
+| Severe — 4+ calls plus a second driver | 42 | 66.7% | $1,834 |
+| Severe — heavy daytime usage | 194 | 59.3% | $9,226 |
+| High — 4+ service calls only | 224 | 48.7% | $5,549 |
+| Elevated — international plan only | 267 | 37.8% | $6,139 |
+| Baseline — no drivers | 2,605 | 5.0% | $8,738 |
 
 Segments are mutually exclusive and exhaustive: counts sum to 3,333 and
-revenue to $198,146.03.
+revenue to $198,146.03. Every segment exports a list of real customer IDs.
 
 **3. Tenure does *not* predict churn** (13.1%–15.3% across cohorts). This was
 expected to be a driver and is not — a genuine finding, and a reason to
 target by behaviour rather than by how long someone has been a customer.
+
+**4. No single intervention moves the needle much.** At the central efficacy
+assumption, the best lever yields 0.39 percentage points, and all three land
+within 0.03 of each other. The flagged groups are small (210–323 of 3,333),
+so a large relative improvement is a small absolute one. Worth knowing before
+funding anything.
 
 ---
 
@@ -102,80 +112,40 @@ Asked *"How did churn change compared to last quarter?"*, the system
 generates `SELECT 'no time dimension' AS answer FROM v_kpi_summary LIMIT 1`
 and explains why no comparison is possible.
 
-## 🏗️ Project Architecture
+---
 
-```text
-                    ┌──────────────────────┐
-                    │  telecom_churn.csv   │
-                    │   Source Dataset     │
-                    └──────────┬───────────┘
-                               │
-                               ▼
-                    ┌──────────────────────┐
-                    │       etl.py         │
-                    │  Data Cleaning & ETL  │
-                    └──────────┬───────────┘
-                               │
-                ┌──────────────┴──────────────┐
-                ▼                             ▼
-     ┌─────────────────────┐       ┌────────────────────────┐
-     │ 6 Normalized Tables │       │ simulate_history.py    │
-     │   Observed Data     │       │ Synthetic Time History │
-     │   (No dates)        │       └───────────┬────────────┘
-     └──────────┬──────────┘                   │
-                │                              ▼
-                │                  ┌────────────────────────┐
-                │                  │ customer_snapshot_     │
-                │                  │ simulated               │
-                │                  │      SIMULATED          │
-                │                  └───────────┬────────────┘
-                │                              │
-                └──────────────┬───────────────┘
-                               ▼
-                    ┌──────────────────────┐
-                    │      views.sql       │
-                    │ 12 Observed Views    │
-                    │ 4 Simulated Views    │
-                    └──────────┬───────────┘
-                               ▼
-                    ┌──────────────────────┐
-                    │     metrics.py       │
-                    │  Validated JSON      │
-                    │  + Provenance        │
-                    └──────────┬───────────┘
-                               │
-          ┌────────────────────┼────────────────────┐
-          ▼                    ▼                    ▼
-   ┌─────────────┐      ┌─────────────┐      ┌─────────────┐
-   │  charts.py  │      │recommend.py │      │ scenario.py │
-   │ Visualize   │      │ Rules Engine│      │  What-If    │
-   └─────────────┘      └─────────────┘      └─────────────┘
-          │                    │                    │
-          └────────────────────┼────────────────────┘
-                               ▼
-                    ┌──────────────────────┐
-                    │   AI / Query Layer   │
-                    │                      │
-                    │ text_to_sql.py       │
-                    │ NL → SQL             │
-                    │                      │
-                    │ narrate.py           │
-                    │ LLM → Explanation    │
-                    └──────────┬───────────┘
-                               ▼
-                    ┌──────────────────────┐
-                    │     guardrails.py    │
-                    │ Figure & Claim       │
-                    │ Validation           │
-                    └──────────┬───────────┘
-                               ▼
-                 ┌─────────────┴─────────────┐
-                 ▼                           ▼
-        ┌─────────────────┐         ┌─────────────────┐
-        │    FastAPI      │         │    Streamlit    │
-        │     api.py      │         │      app/       │
-        │   REST API      │         │  User Interface │
-        └─────────────────┘         └─────────────────┘
+## Architecture
+
+```
+telecom_churn.csv
+       |
+       v
+   etl.py --------------->  6 normalised tables  (no date columns)
+       |                            |
+       |                            v
+       |                 simulate_history.py ---> customer_snapshot_simulated
+       |                                           (SIMULATED, flat by design)
+       v
+   views.sql ------------>  12 real views  +  4 simulated views
+       |
+       v
+   metrics.py ----------->  JSON payloads carrying provenance metadata
+       |
+   +---+----------+--------------+---------------+--------------+
+   v              v              v               v              v
+ charts.py    recommend.py   scenario.py   text_to_sql.py   report_pdf.py
+ (2 renderers) (rules engine) (what-if)     (NL -> SQL)       (PDF)
+   |              |              |               |              |
+   +--------------+------+-------+---------------+--------------+
+                         v
+                    narrate.py  ·  LLM explains, never computes
+                         v
+                   guardrails.py  ·  every figure checked
+                         v
+              FastAPI (api.py)   +   Streamlit (app/)
+```
+
+---
 
 ## Setup
 
@@ -185,22 +155,29 @@ pip install -r requirements.txt
 
 Create a `.env` file in the project root:
 
+```
 LLM_PROVIDER=groq
 GROQ_API_KEY=gsk_your_key_here
-GROQ_MODEL=llama-3.3-70b-versatile
-GROQ_SQL_MODEL=llama-3.3-70b-versatile
-LLM_SQL_MAX_TOKENS=500
+GROQ_MODEL=openai/gpt-oss-120b
+GROQ_SQL_MODEL=openai/gpt-oss-120b
+LLM_TEMPERATURE=0
+LLM_MAX_TOKENS=1200
+LLM_SQL_MAX_TOKENS=2500
 LLM_MIN_INTERVAL=3
-
+```
 
 Get a free key at [console.groq.com](https://console.groq.com) — no card
 required. Set `LLM_PROVIDER=mock` to run the entire system offline with no
 API calls.
 
+`LLM_TEMPERATURE=0` is deliberate: every call in this project is factual
+narration of pre-computed figures, so sampling randomness buys nothing and
+costs reproducibility.
+
 Place `telecom_churn.csv` in `data/`, then:
 
 ```bash
-python run.py all      # ETL → simulate → views → all 8 check suites
+python run.py all      # ETL -> simulate -> views -> all 8 check suites
 ```
 
 ---
@@ -209,8 +186,8 @@ python run.py all      # ETL → simulate → views → all 8 check suites
 
 | Command | What it does | Cost |
 |---|---|---|
-| `python run.py all` | full rebuild + every check | free |
-| `python run.py check` | all 8 offline suites | free |
+| `python run.py all` | full rebuild + every offline check | free |
+| `python run.py check` | all 8 offline suites (~186 checks) | free |
 | `python run.py ui` | Streamlit interface | free |
 | `python run.py api` | FastAPI + Swagger docs | free |
 | `python run.py report` | generate the PDF | ~15 calls |
@@ -218,6 +195,7 @@ python run.py all      # ETL → simulate → views → all 8 check suites
 | `python run.py export` | write chart PNGs | free |
 | `python run.py evals --live` | adversarial LLM evals | ~8 calls |
 | `python run.py sqlevals --live` | SQL pipeline evals | ~20 calls |
+| `python run.py sqlevals --compare` | benchmark two models | ~40 calls |
 
 The interface opens on `http://localhost:8501`; the API docs on
 `http://127.0.0.1:8000/docs`.
@@ -238,22 +216,23 @@ Worth demonstrating in this order:
 
 1. **Executive Overview** — KPIs, risk segmentation, the three drivers
 2. **AI Business Advisor** — ask *"how did churn change last quarter?"* and
-   watch it decline rather than invent a trend
+   watch it decline rather than invent a trend; each answer shows how many
+   figures were verified against the query result
 3. **What-If Lab** — a hypothetical answered as a *range*, not a number
-4. **Data Quality** — reconciliation, live system status, 183 checks
+4. **Data Quality** — reconciliation, live system status, 186 checks
 
 ---
 
 ## Testing
 
 ```bash
-python run.py check          # 8 suites, ~183 checks, offline and free
+python run.py check          # 8 suites, ~186 checks, offline and free
 ```
 
 | Suite | Covers |
 |---|---|
 | Phase 1 — data | CSV reconciles to the database to the cent |
-| Phase 2 — views | revenue agrees across eight independent view paths |
+| Phase 2 — views | revenue agrees across nine independent view paths |
 | Phase 6 — rules | segments exhaustive and non-overlapping |
 | Phase 6.5 — simulated | panel is flat, reconciles, and is not monotonic |
 | Phase 4 — guardrails | fabricated figures and temporal claims caught |
@@ -262,6 +241,10 @@ python run.py check          # 8 suites, ~183 checks, offline and free
 | Phase 8 — scenarios | results banded and framed as hypotheticals |
 
 Live suites (`--live`) exercise the real model and consume quota.
+
+The regression cases are the valuable part: several encode *actual* model
+outputs that the validator wrongly rejected, so a future change cannot
+silently reintroduce a false positive.
 
 ---
 
@@ -284,65 +267,83 @@ Secrets live in `.env`, which is gitignored.
 
 ## Project structure
 
-run.py entry point for every command
+```
+run.py                  entry point for every command
 
 src/
-config.py paths, cohort boundaries, column aliases
-models.py SQLAlchemy schema (6 tables)
-etl.py CSV → clean → feature-engineer → load
-simulate_history.py seeded monthly panel (SIMULATED)
-views.sql 12 real metric views
-views_simulated.sql 4 simulated-history views
-build_views.py idempotent view builder
-metrics.py query layer, JSON payloads with provenance
-chart_specs.py 12 chart definitions, one source of truth
-charts.py matplotlib + plotly renderers, AI explainer
-llm_provider.py provider abstraction (mock / groq / ollama)
-prompts.py system prompt encoding every data constraint
-guardrails.py post-response validator
-narrate.py narration pipeline
-sql_guard.py SQL validation + allowlist
-text_to_sql.py natural language → SQL → execute → narrate
-rules.py recommendation rules + economic assumptions
-recommend.py rules engine, target lists, reconciliation
-scenario.py what-if levers with efficacy bands
-report_content.py report assembly (no rendering)
-report_pdf.py PDF rendering (no content decisions)
-api.py FastAPI service
+  config.py             paths, cohort boundaries, column aliases
+  models.py             SQLAlchemy schema (6 tables)
+  etl.py                CSV -> clean -> feature-engineer -> load
+  simulate_history.py   seeded monthly panel (SIMULATED)
+  views.sql             12 real metric views
+  views_simulated.sql   4 simulated-history views
+  build_views.py        idempotent view builder
+  metrics.py            query layer, JSON payloads with provenance
+  chart_specs.py        12 chart definitions, one source of truth
+  charts.py             matplotlib + plotly renderers, AI explainer
+  llm_provider.py       provider abstraction (mock / groq / ollama)
+  prompts.py            system prompt encoding every data constraint
+  guardrails.py         post-response validator
+  narrate.py            narration pipeline
+  sql_guard.py          SQL validation + allowlist
+  text_to_sql.py        natural language -> SQL -> execute -> narrate
+  rules.py              recommendation rules + economic assumptions
+  recommend.py          rules engine, target lists, reconciliation
+  scenario.py           what-if levers with efficacy bands
+  report_content.py     report assembly (no rendering)
+  report_pdf.py         PDF rendering (no content decisions)
+  api.py                FastAPI service
 
 app/
-app.py Streamlit entry point and routing
-components/
-styles.py CSS design system
-ui.py shared card / KPI / badge primitives
-navigation.py grouped sidebar
-backend.py THE ONLY module importing from src/
-pages_analytics.py overview, churn, segments, cohorts, revenue
-pages_ai.py advisor, scenario lab, report, validation
+  app.py                Streamlit entry point and routing
+  components/
+    styles.py           CSS design system
+    ui.py               shared card / KPI / badge primitives
+    navigation.py       grouped sidebar
+    backend.py          THE ONLY module importing from src/
+    pages_analytics.py  overview, churn, segments, cohorts, revenue
+    pages_ai.py         advisor, scenario lab, report, validation
 
-tests/ 8 offline check suites
-data/ CSV + generated SQLite database
-exports/ chart PNGs and generated PDFs
-
+tests/                  8 offline check suites
+data/                   CSV + generated SQLite database
+exports/                chart PNGs and generated PDFs
+```
 
 ---
 
-## Model selection
+## Model selection, and a forced migration
 
 Role-based model routing was built so narration and SQL generation could use
 different models, then **measured rather than assumed**:
 
-| Model | valid SQL | correct view | seconds |
-|---|---|---|---|
-| Llama 3.3 70B | 20/20 | 18/20 | 90 |
-| Qwen 3.6 27B | 0/20 | 0/20 | 451 |
+| Model | valid SQL | correct view | retries | seconds |
+|---|---|---|---|---|
+| Llama 3.3 70B | 20/20 | 18/20 | 2 | 90 |
+| Qwen 3.6 27B | 0/20 | 0/20 | 20 | 451 |
+| **GPT OSS 120B** | **20/20** | **19/20** | **0** | 98 |
 
-Result: single model for both roles. The abstraction was kept — it cost
-fifteen lines and it's what made the measurement possible.
+**Qwen's result was invalid**, and worth stating plainly: the token budget
+was tuned for a non-reasoning model, so Qwen was truncated mid-thought on
+every call. That is a configuration bug, not a capability verdict.
 
-**Caveat:** Qwen's score reflects a token budget tuned for a non-reasoning
-model, which truncated its output mid-thought. The honest reading is *"Qwen
-underperformed under this configuration"*, not *"Qwen can't write SQL."*
+**Groq decommissioned Llama 3.3 70B on 16 August 2026** with roughly two
+weeks' notice. Migration was a two-line `.env` change plus a re-run of the
+eval suites, because `llm_provider.py` deliberately imports no vendor SDK and
+reads every model name from configuration. The replacement scored *better* —
+19/20 on view selection with zero retries, at roughly a quarter of the prompt
+cost.
+
+The migration also exposed two latent bugs that no amount of testing against
+a single model would have found:
+
+- A **regex that split `$29,016.57` into a phantom `16.57`**, because the
+  thousands-separator branch had no provision for a trailing decimal. Llama's
+  formatting happened never to take that path. A validator tuned against one
+  model's output style carries hidden assumptions about that style.
+- A **prompt that invited computation** — "say how much churn changes across
+  the threshold" is practically a request to subtract, and the model
+  occasionally obliged with a figure the payload did not contain. The
+  validator caught it, which is the system working rather than failing.
 
 ---
 
@@ -353,23 +354,25 @@ underperformed under this configuration"*, not *"Qwen can't write SQL."*
 - **Simulated history shows structure, not trends.** The monthly panel is
   generated from the snapshot, so it contains no information the snapshot did
   not already hold. Churn in it is deliberately flat — a trend there would
-  reflect the generator's random seed.
+  reflect the generator's random seed rather than customer behaviour.
 - **Projected values rest on assumptions.** Save rate, contact cost and
   acquisition cost are industry-typical placeholders; the dataset has no cost
   data. Every projection is reported with a sensitivity band.
 - **Scenarios are hypotheticals, not forecasts.** The data is observational:
   flagged customers churn more, but removing the flag may not remove the
   churn. Results carry an explicit efficacy assumption and are reported as a
-  range.
+  range, never as a single number.
 - **State-level results are noisy.** 51 states averaging 65 customers each.
   Geography is the weakest dimension in this data.
 - **The guardrail validator uses phrase matching**, which cannot fully
-  distinguish *asserting* a claim from *refuting* one. Six false positives
-  were found and fixed during development; no false negative has been
-  observed. The failure mode is conservative — it blocks good answers rather
-  than passing bad ones.
-- **Free tier limits.** ~100,000 Groq tokens per day, roughly 100–200 `/ask`
-  calls or 6–8 full reports.
+  distinguish *asserting* a claim from *refuting*, *comparing*, or
+  *prescribing* one. Eight false positives were found and fixed during
+  development — two of them only after changing models. No false negative has
+  been observed. The failure mode is conservative: it blocks good answers
+  rather than passing bad ones. A stronger design would use entailment
+  checking or a second model as judge.
+- **Free tier limits.** 1,000 requests/day and 8,000 tokens/minute on Groq —
+  roughly 60 full reports or 300 conversational questions per day.
 
 ---
 
@@ -392,7 +395,9 @@ underperformed under this configuration"*, not *"Qwen can't write SQL."*
 
 Phase 10 adds per-customer risk scoring with SHAP explanations narrated by
 the LLM — the answer to *"which customers will churn"*, which the current
-segment model deliberately does not claim to provide.
+segment model deliberately does not claim to provide. Metrics will be
+precision, recall and AUC rather than accuracy: at a 14.5% base rate,
+predicting "nobody churns" scores 85.5%.
 
 ---
 

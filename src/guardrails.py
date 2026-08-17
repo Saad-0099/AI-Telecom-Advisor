@@ -199,8 +199,11 @@ REQUIREMENT_WINDOW = 120
 def _is_requirement(lowered: str, phrase: str) -> bool:
     """True if EVERY occurrence of `phrase` sits inside a requirement.
 
-    Checks backwards only: the requirement framing always precedes the
-    temporal word ("to assess change over time...").
+    Checks backwards only: the framing always precedes the temporal word
+    ("to assess change over time..."). The window is clamped to the
+    current sentence, or "To assess change over time you would need a
+    prior period. Revenue increased." would be excused by framing that
+    belongs to the previous sentence.
     """
     start = 0
     while True:
@@ -208,6 +211,9 @@ def _is_requirement(lowered: str, phrase: str) -> bool:
         if idx == -1:
             return True
         back = lowered[max(0, idx - REQUIREMENT_WINDOW):idx]
+        for stop in (".", "!", "?", ";", "\n"):
+            if stop in back:
+                back = back.rsplit(stop, 1)[1]
         if not any(m in back for m in REQUIREMENT_MARKERS):
             return False
         start = idx + len(phrase)
