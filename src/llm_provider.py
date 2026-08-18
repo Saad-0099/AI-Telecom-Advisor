@@ -57,7 +57,7 @@ OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/chat")
 TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.1"))  # low: we want facts
 
 # Default budget, used when no role is specified.
-MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "1200"))
+MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "2000"))
 
 TIMEOUT_S = int(os.getenv("LLM_TIMEOUT", "120"))
 
