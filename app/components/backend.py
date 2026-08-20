@@ -64,6 +64,10 @@ def caveats() -> list[str]:
         m.get("cohort_note", ""),
         "State-level rates rest on ~65 customers each and carry several "
         "points of sampling noise.",
+        "Risk scores rank customers by resemblance to past churners. They "
+        "do not forecast timing, and a high score is a probability rather "
+        "than a verdict.",
+    
     ]
     return [c for c in out if c]
 
@@ -345,3 +349,50 @@ def generate_report(include_charts: bool = True) -> tuple[bytes, str]:
     pathlib.Path(path).unlink(missing_ok=True)
     name = f"portfolio_risk_report_{datetime.now():%Y%m%d_%H%M}.pdf"
     return data, name
+
+
+
+
+# ==========================================================================
+# Phase 10 — churn risk model
+# ==========================================================================
+def model_available() -> bool:
+    try:
+        import churn_model
+        return churn_model.MODEL_PATH.exists()
+    except Exception:
+        return False
+
+
+@st.cache_data(ttl=CACHE_TTL)
+def model_metrics() -> dict:
+    import churn_model
+    return churn_model.model_metrics()
+
+
+@st.cache_data(ttl=CACHE_TTL)
+def model_importance() -> dict:
+    import churn_explain
+    return churn_explain.global_importance()
+
+
+@st.cache_data(ttl=CACHE_TTL)
+def scored_customers(limit: int = 200) -> list[dict]:
+    import churn_model
+    return churn_model.score_customers(limit=limit).to_dict("records")
+
+
+@st.cache_data(ttl=CACHE_TTL)
+def explain_customer(customer_id: int) -> dict:
+    import churn_explain
+    return churn_explain.explain_customer(customer_id)
+
+
+def narrate_model(kind: str, customer_id: int | None = None) -> dict:
+    """AI explanation. NOT cached — each call costs quota."""
+    import churn_explain
+    if kind == "comparison":
+        return churn_explain.narrate_comparison()
+    if kind == "importance":
+        return churn_explain.narrate_global()
+    return churn_explain.narrate_customer(customer_id)

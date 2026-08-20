@@ -30,6 +30,8 @@ NAV = [
     ("AI & Decisions", [
         ("advisor",   "✦", "AI Business Advisor"),
         ("scenarios", "◎", "What-If Lab"),
+        ("risk",      "◉", "Churn Risk Model"),
+    
     ]),
     ("Reporting", [
         ("report",    "▤", "Executive Report"),

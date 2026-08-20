@@ -370,9 +370,11 @@ def section_caveats() -> dict:
             "REVENUE IS PERIOD CHARGES. Not monthly recurring revenue and "
             "not annualised.",
 
-            "CHURN RISK IS NOT PREDICTED HERE. Segments describe which "
-            "customers resemble those who already churned. Scoring "
-            "individual customers is a separate modelling problem.",
+            "RISK SCORES RANK, THEY DO NOT FORECAST. The model ranks "
+            "customers by how closely they resemble those who already "
+            "churned. It says nothing about WHEN anyone will leave, and a "
+            "high score is a probability, not a verdict. It was trained on "
+            "a single snapshot and validated on a held-out quarter of it.",
         ],
     }
 

@@ -340,3 +340,76 @@ def scenario_narrate(
         return scenario.narrate(lever, pct)
     except scenario.ScenarioError as exc:
         raise HTTPException(400, str(exc))
+
+    
+
+
+# ==========================================================================
+# Phase 10 — churn risk model
+# ==========================================================================
+import churn_explain
+import churn_model
+
+
+@app.get("/model/metrics", tags=["model"])
+def model_metrics():
+    """Comparison of the three trained models, with honest metrics."""
+    try:
+        return churn_model.model_metrics()
+    except FileNotFoundError as exc:
+        raise HTTPException(503, str(exc))
+
+
+@app.get("/model/importance", tags=["model"])
+def model_importance():
+    """Global SHAP attribution — which features move the score."""
+    try:
+        return churn_explain.global_importance()
+    except FileNotFoundError as exc:
+        raise HTTPException(503, str(exc))
+
+
+@app.get("/model/customers", tags=["model"])
+def model_scored_customers(limit: int = Query(100, ge=1, le=1000)):
+    """Customers ranked by risk score."""
+    try:
+        df = churn_model.score_customers(limit=limit)
+    except FileNotFoundError as exc:
+        raise HTTPException(503, str(exc))
+    return {"meta": {"data_origin": "MODEL",
+                     "claim": "ranks resemblance to past churners, "
+                              "not a forecast"},
+            "count": len(df),
+            "customers": df.to_dict(orient="records")}
+
+
+@app.get("/model/customers/{customer_id}", tags=["model"])
+def model_explain_customer(customer_id: int):
+    """SHAP breakdown for one customer, with the deterministic action."""
+    try:
+        return churn_explain.explain_customer(customer_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(503, str(exc))
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+
+
+@app.get("/model/narrate/comparison", tags=["model"])
+def model_narrate_comparison():
+    """AI explanation of the model comparison, validated."""
+    return churn_explain.narrate_comparison()
+
+
+@app.get("/model/narrate/importance", tags=["model"])
+def model_narrate_importance():
+    """AI explanation of the global drivers, validated."""
+    return churn_explain.narrate_global()
+
+
+@app.get("/model/narrate/customer/{customer_id}", tags=["model"])
+def model_narrate_customer(customer_id: int):
+    """AI explanation of one customer's score, validated."""
+    try:
+        return churn_explain.narrate_customer(customer_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))

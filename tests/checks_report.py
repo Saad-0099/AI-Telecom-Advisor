@@ -97,7 +97,9 @@ def run() -> int:
         ("state figures are noisy", "NOISY"),
         ("projections rest on assumptions", "ASSUMPTIONS"),
         ("revenue is period charges", "PERIOD CHARGES"),
-        ("risk is not predicted", "NOT PREDICTED"),
+        # Phase 10 replaced "churn risk is not predicted here" with a
+        # statement of what the model DOES claim. The check follows.
+        ("risk scores rank, not forecast", "DO NOT FORECAST"),
     ]:
         check(f"caveat: {topic}", needle in caveats)
 

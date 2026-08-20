@@ -388,3 +388,312 @@ def quality() -> None:
     section("Known limitations")
     for c in be.caveats():
         notice("info", c)
+
+
+
+# ==========================================================================
+def risk_model() -> None:
+    """Phase 10 — per-customer risk scoring with SHAP.
+
+    Three tabs mirroring the three explanation levels: which model and why,
+    what drives the scores globally, and why one customer scored what they
+    did. The per-customer tab is the operationally useful one.
+    """
+    page_header(
+        "Churn Risk Model",
+        "Ranks customers by how closely they resemble those who already "
+        "churned. Not a forecast, and not a verdict.",
+        "observed")
+
+    if not be.model_available():
+        notice("info",
+               "<b>No trained model found.</b> Run "
+               "<code>python run.py train</code> from the project root, "
+               "then reload this page.")
+        return
+
+    notice("projected",
+           "<b>WHAT THIS DOES AND DOES NOT CLAIM.</b> The model ranks "
+           "customers by resemblance to past churners. It says nothing "
+           "about <i>when</i> anyone will leave, and a high score is a "
+           "probability rather than a verdict. It was trained on a single "
+           "snapshot and validated on a held-out quarter of it.")
+
+    tabs = st.tabs(["Model comparison", "What drives the score",
+                    "Customer risk"])
+    with tabs[0]:
+        _model_comparison()
+    with tabs[1]:
+        _model_importance()
+    with tabs[2]:
+        _customer_risk()
+
+
+def _model_comparison() -> None:
+    m = be.model_metrics()
+    winner = m["models"][m["winner"]]
+
+    kpi_row([
+        {"label": "Best model", "value": winner["label"].split("(")[0].strip(),
+         "sub": "selected on PR-AUC", "icon": "◆", "accent": "success"},
+        {"label": "PR-AUC", "value": f"{winner['pr_auc']:.3f}",
+         "sub": "Precision-recall area, suited to imbalance", "icon": "◈"},
+        {"label": "Base rate", "value": f"{m['base_rate_pct']}%",
+         "sub": f"'nobody churns' scores "
+                f"{100 - m['base_rate_pct']:.1f}% accuracy", "icon": "▲",
+         "accent": "warning"},
+    ])
+
+    notice("info",
+           f"<b>Accuracy is not reported as a headline.</b> "
+           f"{m['meta']['accuracy_note'].capitalize()}.")
+
+    section("Three models compared")
+    card_open("Balanced operating point",
+              "Precision and recall at the threshold maximising F1, rather "
+              "than at the capacity threshold — which achieves high "
+              "precision by construction and would overstate the model.")
+    st.dataframe(pd.DataFrame([{
+        "Model": r["label"],
+        "ROC-AUC": r["roc_auc"],
+        "PR-AUC": r["pr_auc"],
+        "Precision": r["balanced_point"]["precision"],
+        "Recall": r["balanced_point"]["recall"],
+        "F1": r["balanced_point"]["f1"],
+        "Interpretability": r["interpretable"],
+    } for r in m["models"].values()]), use_container_width=True,
+        hide_index=True)
+    card_close()
+
+    section("Operating points")
+    card_open("Capacity against balance", m["meta"]["threshold_basis"])
+    rows = []
+    for r in m["models"].values():
+        b = r["balanced_point"]
+        rows.append({"Model": r["label"], "Point": "capacity",
+                     "Flagged": r["flagged"], "Precision": r["precision"],
+                     "Recall": r["recall"],
+                     "Missed churners": r["false_negatives"]})
+        rows.append({"Model": r["label"], "Point": "balanced",
+                     "Flagged": b["flagged"], "Precision": b["precision"],
+                     "Recall": b["recall"],
+                     "Missed churners": b["false_negatives"]})
+    st.dataframe(pd.DataFrame(rows), use_container_width=True,
+                 hide_index=True)
+    card_close()
+
+    _ai_button("comparison", "Explain this comparison")
+
+
+def _model_importance() -> None:
+    imp = be.model_importance()
+
+    section("Global SHAP attribution")
+    notice("info", f"<b>{imp['meta']['measures'].capitalize()}.</b>")
+
+    card_open("Feature contributions",
+              f"Mean absolute SHAP value across a sample of "
+              f"{imp['meta']['sample_size']} customers.")
+    st.dataframe(pd.DataFrame(imp["features"]), use_container_width=True,
+                 hide_index=True)
+    card_close()
+
+    confirms = imp.get("confirms_rules_engine") or []
+    if confirms:
+        notice("info",
+               f"<b>The model agrees with the rules engine.</b> Its top "
+               f"contributors include {', '.join(confirms)} — the same "
+               f"factors the deterministic segments already use. The model "
+               f"was given raw columns only, with no knowledge of the "
+               f"thresholds.")
+
+    _ai_button("importance", "Explain these drivers")
+
+
+def _customer_risk() -> None:
+    section("Customer risk scores")
+    st.caption("The model should score churners high AND retained customers "
+               "low. Both directions matter — a model that flags everyone "
+               "would score churners perfectly and be useless.")
+
+    # Score the whole base so retained customers are visible too. Showing
+    # only the top 200 hides half the model's job: a reader could not tell
+    # whether low scores are actually being assigned to people who stayed.
+    rows = be.scored_customers(3333)
+    df = pd.DataFrame(rows)
+
+    cols = st.columns([1, 1, 2])
+    with cols[0]:
+        outcome = st.radio("Show", ["All", "Churned", "Retained"],
+                           horizontal=True, key="risk_outcome")
+    with cols[1]:
+        band = st.radio("Score band", ["All", "High", "Low"],
+                        horizontal=True, key="risk_band")
+
+    view = df
+    if outcome == "Churned":
+        view = view[view.churned == 1]
+    elif outcome == "Retained":
+        view = view[view.churned == 0]
+    if band == "High":
+        view = view[view.flagged == 1]
+    elif band == "Low":
+        view = view[view.flagged == 0]
+
+    with cols[2]:
+        st.markdown(
+            f'<div style="padding-top:1.6rem;font-size:.82rem;color:#8794A8">'
+            f'{len(view):,} of {len(df):,} customers · mean score '
+            f'{view.risk_score.mean():.3f}</div>' if len(view)
+            else '<div style="padding-top:1.6rem">no customers match</div>',
+            unsafe_allow_html=True)
+
+    show = view[["customer_id", "risk_score", "flagged",
+                 "customer_service_calls", "international_plan",
+                 "day_charge", "total_charge", "churned"]].copy()
+    show["risk_score"] = show.risk_score.round(4)
+    st.dataframe(show, use_container_width=True, hide_index=True, height=300)
+
+    # --- how well do the two groups separate? -------------------------
+    section("Does the model separate the two groups?")
+    churned = df[df.churned == 1].risk_score
+    retained = df[df.churned == 0].risk_score
+    kpi_row([
+        {"label": "Mean score — churned", "value": f"{churned.mean():.3f}",
+         "sub": f"{len(churned):,} customers", "icon": "◲",
+         "accent": "danger"},
+        {"label": "Mean score — retained", "value": f"{retained.mean():.3f}",
+         "sub": f"{len(retained):,} customers", "icon": "◱",
+         "accent": "success"},
+        {"label": "Separation",
+         "value": f"{churned.mean() - retained.mean():.3f}",
+         "sub": "Gap between the two means", "icon": "◈"},
+    ])
+
+    section("Look up any customer")
+    st.caption("Enter any customer ID — churned or retained. Seeing why a "
+               "retained customer scored LOW is as informative as seeing "
+               "why a churner scored high.")
+
+    pick = st.columns([1, 1, 2])
+    with pick[0]:
+        chosen = st.number_input(
+            "Customer ID", min_value=int(df.customer_id.min()),
+            max_value=int(df.customer_id.max()),
+            value=int(df.customer_id.iloc[0]), step=1, key="risk_cust_id")
+    with pick[1]:
+        st.markdown("<div style='height:1.6rem'></div>",
+                    unsafe_allow_html=True)
+        if st.button("Random retained customer", key="rand_retained"):
+            st.session_state.risk_cust_id = int(
+                df[df.churned == 0].sample(1).customer_id.iloc[0])
+            st.rerun()
+
+    try:
+        detail = be.explain_customer(int(chosen))
+    except Exception as exc:
+        st.error(f"Customer {chosen} could not be scored — {exc}")
+        return
+
+    _render_customer_detail(detail)
+
+
+def _render_customer_detail(detail: dict) -> None:
+    churned = bool(detail["actually_churned"])
+    flagged = bool(detail["flagged"])
+    # Four outcomes, and the two errors are worth naming explicitly rather
+    # than leaving a reader to work out whether the model was right.
+    verdict = {
+        (True, True): ("Correctly flagged", "success"),
+        (False, False): ("Correctly not flagged", "success"),
+        (True, False): ("MISSED — churned but scored below threshold",
+                        "danger"),
+        (False, True): ("FALSE ALARM — retained but flagged", "warning"),
+    }[(churned, flagged)]
+    verdict_icon = {"success": "✓", "warning": "!", "danger": "✕"}[verdict[1]]
+
+    kpi_row([
+        {"label": "Risk score", "value": f"{detail['risk_score']:.3f}",
+         "sub": ("above the flagging threshold" if flagged
+                 else "below the threshold"),
+         "icon": "◈", "accent": "danger" if flagged else "success"},
+        {"label": "Actual outcome",
+         "value": "Churned" if churned else "Retained",
+         "sub": "From the source data", "icon": "◱",
+         "accent": "danger" if churned else "success"},
+        {"label": "Model verdict", "value": verdict[0].split("—")[0].strip(),
+         "sub": verdict[0], "icon": verdict_icon, "accent": verdict[1]},
+    ])
+
+    card_open("SHAP contributions",
+              "How much each factor moved THIS customer's score. Positive "
+              "raises risk, negative lowers it — and for a retained "
+              "customer the negative contributions are the interesting "
+              "part.")
+    st.dataframe(pd.DataFrame(detail["contributions"]),
+                 use_container_width=True, hide_index=True)
+    card_close()
+
+    # Name what an error MEANS. A reader who sees "MISSED" without an
+    # explanation may conclude the model is broken, when in fact these are
+    # customers the three drivers simply do not describe.
+    if churned and not flagged:
+        notice("info",
+               "<b>This customer churned without a strong signal.</b> Their "
+               "features resemble retained customers, so the model scored "
+               "them low. Roughly a third of churners fall into this group "
+               "at the current threshold — they left for reasons the three "
+               "drivers do not capture. Lowering the threshold would catch "
+               "some of them, at the cost of flagging retained customers "
+               "too.")
+    elif flagged and not churned:
+        notice("info",
+               "<b>False alarm.</b> This customer carries risk factors but "
+               "did not churn. Contacting them is not wasted — a retention "
+               "offer to a satisfied high-risk customer is cheap insurance "
+               "— but it is worth knowing the model over-flagged here.")
+
+    if detail["recommended_actions"]:
+        section("Recommended action")
+        st.caption("Looked up deterministically from the rules engine — the "
+                   "model says WHY, the rules say WHAT TO DO.")
+        for a in detail["recommended_actions"]:
+            st.markdown(
+                f'<div class="card card-flat" style="padding:.8rem 1.1rem;'
+                f'margin-bottom:.5rem">'
+                f'<b style="font-size:.9rem">{a["action"]}</b>'
+                f'<div style="font-size:.78rem;color:#6E7A8E;'
+                f'margin-top:.25rem">Driver: {a["driver"]} · '
+                f'likely cause: {a["cause"]}</div></div>',
+                unsafe_allow_html=True)
+    elif not flagged:
+        notice("info",
+               "<b>No action recommended.</b> No factor raised this "
+               "customer's score materially — which is what a correctly "
+               "scored retained customer looks like.")
+
+    _ai_button("customer", "Explain this score",
+               customer_id=detail["customer_id"])
+
+def _ai_button(kind: str, label: str, customer_id: int | None = None) -> None:
+    key = f"ai_model_{kind}_{customer_id or ''}"
+    col, _ = st.columns([1, 3])
+    with col:
+        if st.button(f"✦  {label}", key=f"btn_{key}"):
+            with st.spinner("Reading the model output…"):
+                st.session_state[key] = be.narrate_model(kind, customer_id)
+
+    result = st.session_state.get(key)
+    if not result:
+        return
+    if result.get("error"):
+        st.error(f"Explanation unavailable — {result['error']}")
+        return
+
+    v = result.get("validation") or {}
+    ai_block("answer", "AI explanation", result["text"], "✦")
+    verification(result.get("valid", False), v.get("numbers_checked", 0),
+                 "the model output")
+    if not result.get("valid"):
+        for x in v.get("violations", []):
+            st.warning(f"**{x['type']}** — {x['detail']}")

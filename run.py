@@ -51,6 +51,7 @@ def cmd_views(args): return _run(SRC / "build_views.py", *args)
 def cmd_report(args): return _run(SRC / "report_pdf.py", *args)
 def cmd_evals(args): return _run(TESTS / "evals.py", *args)
 def cmd_sqlevals(args): return _run(TESTS / "sql_evals.py", *args)
+def cmd_train(args): return _run(SRC / "churn_model.py", *args)
 
 
 def cmd_check(args) -> int:
@@ -64,6 +65,7 @@ def cmd_check(args) -> int:
         ("Phase 5 — SQL guard", TESTS / "sql_evals.py"),
         ("Phase 7 — report", TESTS / "checks_report.py"),
         ("Phase 8 — scenarios", TESTS / "checks_scenario.py"),
+        ("Phase 10 — risk model", TESTS / "checks_model.py"),
     ]
     failed = []
     for label, script in suites:
@@ -151,6 +153,7 @@ COMMANDS = {
     "evals": cmd_evals,
     "sqlevals": cmd_sqlevals,
     "all": cmd_all,
+    "train": cmd_train,
 }
 
 

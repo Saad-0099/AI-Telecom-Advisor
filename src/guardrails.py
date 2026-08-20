@@ -5,19 +5,23 @@ A prompt instruction is a request. This module is the enforcement: every
 LLM response is checked against the payload it was given BEFORE anyone
 sees it.
 
-Four checks:
+Five checks:
   1. NUMBER GROUNDING  every figure in the text must exist in the payload
   2. TEMPORAL CLAIMS   no assertion of change over time
-  3. FORECAST CLAIMS   nothing in this project predicts what will happen
-  4. FALSE DRIVERS     no tenure-causes-churn claim, no linear service-call claim
+  3. MODEL CLAIMS      no causal or certainty language about a risk score
+  4. FORECAST CLAIMS   nothing in this project predicts what will happen
+  5. FALSE DRIVERS     no tenure-causes-churn claim, no linear service-call claim
 
-Three payload origins relax rule 2 in different, narrow ways:
+Four payload origins relax rule 2 in different, narrow ways:
 
   (default)   snapshot data. No temporal claims at all.
   SIMULATED   Phase 6.5 panel. Structural time-series language allowed,
               but only when disclosed, and never about churn.
   PROJECTED   Phase 8 scenarios. Conditional language allowed, but only
               when framed as a hypothetical.
+  MODEL       Phase 10 risk scores. Adds rule 3 rather than relaxing
+              anything: SHAP contributions are not causes, and a
+              probability is not a verdict.
 
 Origin is detected from the payload itself, never passed in as a flag, so
 a caller cannot accidentally unlock relaxed rules for real snapshot data.
@@ -29,9 +33,10 @@ The tradeoff is that a fabricated small count could slip through; every
 number large enough to be a metric is still caught.
 
 KNOWN LIMITATION: this is phrase matching, which cannot fully distinguish
-asserting a claim from refuting one. Six false positives were found and
-fixed during development; no false negative has been observed. The failure
-mode is conservative — it blocks good answers rather than passing bad ones.
+asserting a claim from refuting, comparing, or prescribing one. Eight false
+positives were found and fixed during development — two of them only after
+changing models. No false negative has been observed. The failure mode is
+conservative: it blocks good answers rather than passing bad ones.
 """
 
 from __future__ import annotations
@@ -77,15 +82,14 @@ FALSE_SLOPE_CLAIMS = [
 
 # The thousands-group branch MUST allow a trailing decimal, or "31,566.93"
 # is matched as "31,566" and the regex then starts fresh at ".93",
-# producing a phantom 93 that no payload contains. Llama wrote "$31,566.93"
-# and happened not to trigger it; GPT OSS omits the currency symbol and
-# does. \u202f (narrow no-break space) is included in the separator class
-# because GPT OSS uses it between a figure and its unit.
+# producing a phantom 93 that no payload contains. \u202f (narrow no-break
+# space) is included because some models put it between figure and unit.
 NUMBER_RE = re.compile(
     r"\$?[\s\u202f\u00a0]*"
     r"(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)"
     r"[\s\u202f\u00a0]*%?"
 )
+
 SMALL_INT_ALLOWANCE = 12   # see module docstring
 
 NEGATION_MARKERS = [
@@ -110,6 +114,23 @@ NEGATION_WINDOW = 180  # characters to look back
 SIMULATION_DISCLOSURES = [
     "simulated", "simulation", "synthetic", "generated history",
     "not real history", "illustrative",
+]
+
+# SHAP measures a feature's contribution to a PREDICTION, not to the
+# outcome. Models routinely blur that, so causal phrasing about model
+# features is blocked outright for MODEL payloads.
+CAUSAL_MODEL_CLAIMS = [
+    "caused the churn", "caused them to churn", "caused this customer",
+    "is the cause of", "causes churn", "causing churn",
+    "led to churn", "resulted in churn", "made them churn",
+    "because of these factors they churned",
+]
+
+# A risk score is a probability, not a verdict.
+CERTAINTY_CLAIMS = [
+    "will churn", "will leave", "will cancel", "is going to churn",
+    "definitely churn", "certain to churn", "guaranteed to",
+    "this customer churns",
 ]
 
 # Words that frame a statement as a hypothetical rather than an assertion.
@@ -170,8 +191,6 @@ FORWARD_WINDOW = 120  # characters to look ahead
 # Phrases signalling a CROSS-SECTIONAL comparison rather than a temporal
 # one. "Churn increases from 5.0% to 59.0% when this factor is present"
 # compares two groups in the same snapshot; it is not a claim about time.
-# Without this, the validator rejects a correct description of a segment
-# difference purely because the verb happens to be "increases".
 COMPARISON_MARKERS = [
     "from", "to", "when", "among", "for customers", "versus", "vs",
     "compared with", "compared to", "against", "between",
@@ -183,9 +202,7 @@ COMPARISON_WINDOW = 100
 
 # Phrases that make a temporal word part of a REQUIREMENT rather than a
 # claim. "To assess change over time you would need a prior period" states
-# what would be necessary; it asserts nothing about what happened. The
-# negation that licenses it usually sits in the preceding sentence, so
-# _all_negated's sentence clamping cannot see it.
+# what would be necessary; it asserts nothing about what happened.
 REQUIREMENT_MARKERS = [
     "you would need", "would require", "would need", "to assess",
     "to determine", "to measure", "to calculate", "in order to",
@@ -328,10 +345,19 @@ def _is_projected(payload: dict) -> bool:
     """True when the payload is a hypothetical scenario calculation.
 
     Scenario output is inherently conditional ("churn would fall to
-    14.10%"), which the temporal rules would otherwise reject. Same
-    detection route as _is_simulated, for the same reason.
+    14.10%"), which the temporal rules would otherwise reject.
     """
     return _has_origin(payload, "PROJECTED")
+
+
+def _is_model(payload: dict) -> bool:
+    """True when the payload comes from the Phase 10 risk model.
+
+    Model output needs two rules the other origins do not: no causal
+    language about SHAP contributions, and no certainty language about a
+    probabilistic score.
+    """
+    return _has_origin(payload, "MODEL")
 
 
 # --------------------------------------------------------------------------
@@ -399,6 +425,7 @@ def validate(text: str, payload: dict, rel_tol: float = 0.01) -> dict:
     """
     simulated = _is_simulated(payload)
     projected = _is_projected(payload)
+    from_model = _is_model(payload)
     lowered = text.lower()
     violations: list[dict] = []
     warnings: list[dict] = []
@@ -420,8 +447,9 @@ def validate(text: str, payload: dict, rel_tol: float = 0.01) -> dict:
     # --- 2. temporal claims -------------------------------------------
     # A phrase inside a negation is a correct REFUSAL, not a violation:
     # "there is no prior period" must pass, "up from the prior period"
-    # must fail. A phrase inside a segment comparison is also fine:
-    # "churn increases from 5.0% to 59.0%" compares groups, not periods.
+    # must fail. A phrase inside a segment comparison is also fine
+    # ("churn increases from 5.0% to 59.0%"), as is one inside a
+    # requirement ("to assess change over time you would need...").
     hits = [p for p in FORBIDDEN_TEMPORAL
             if p in lowered
             and not _all_negated(lowered, p)
@@ -462,7 +490,27 @@ def validate(text: str, payload: dict, rel_tol: float = 0.01) -> dict:
             "detail": f"asserts change over time: {hits}",
         })
 
-    # --- 3. forecast claims -------------------------------------------
+    # --- 3. model-output rules ----------------------------------------
+    # These ADD to the default rules rather than relaxing them. A SHAP
+    # value is a contribution to a prediction, not to an outcome, and a
+    # probability is not a verdict.
+    if from_model:
+        causal = [p for p in CAUSAL_MODEL_CLAIMS if p in lowered]
+        if causal:
+            violations.append({
+                "type": "causal_model_claim",
+                "detail": (f"SHAP measures contribution to the SCORE, not "
+                           f"to the outcome: {causal}"),
+            })
+        certain = [p for p in CERTAINTY_CLAIMS if p in lowered]
+        if certain:
+            violations.append({
+                "type": "certainty_claim",
+                "detail": (f"a risk score is a probability, not a verdict: "
+                           f"{certain}"),
+            })
+
+    # --- 4. forecast claims -------------------------------------------
     # Checked INDEPENDENTLY of the temporal hits. "will drop" is not in
     # FORBIDDEN_TEMPORAL, so gating this on `hits` let a scenario be
     # presented as a prediction without any violation firing.
@@ -482,7 +530,7 @@ def validate(text: str, payload: dict, rel_tol: float = 0.01) -> dict:
             "detail": f"check these are recommendations, not claims: {soft}",
         })
 
-    # --- 4. false drivers ---------------------------------------------
+    # --- 5. false drivers ---------------------------------------------
     tenure_hits = [p for p in FALSE_TENURE_CLAIMS
                    if p in lowered and not _claim_defused(lowered, p)]
     if tenure_hits:
@@ -503,7 +551,8 @@ def validate(text: str, payload: dict, rel_tol: float = 0.01) -> dict:
         "passed": not violations,
         "violations": violations,
         "warnings": warnings,
-        "data_origin": ("PROJECTED" if projected
+        "data_origin": ("MODEL" if from_model
+                        else "PROJECTED" if projected
                         else "SIMULATED" if simulated else "OBSERVED"),
         "numbers_checked": len(extract_numbers(text)),
     }

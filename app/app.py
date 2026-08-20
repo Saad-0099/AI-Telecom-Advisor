@@ -46,6 +46,7 @@ ROUTES = {
     "scenarios": pages_ai.scenario_lab,
     "report":    pages_ai.report_builder,
     "quality":   pages_ai.quality,
+    "risk":      pages_ai.risk_model,
 }
 
 
