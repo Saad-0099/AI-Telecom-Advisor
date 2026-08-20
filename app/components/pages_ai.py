@@ -575,19 +575,38 @@ def _customer_risk() -> None:
                "retained customer scored LOW is as informative as seeing "
                "why a churner scored high.")
 
-    pick = st.columns([1, 1, 2])
-    with pick[0]:
-        chosen = st.number_input(
-            "Customer ID", min_value=int(df.customer_id.min()),
-            max_value=int(df.customer_id.max()),
-            value=int(df.customer_id.iloc[0]), step=1, key="risk_cust_id")
+    # The pending value is held under a SEPARATE key from the widget.
+    # Streamlit forbids writing to a widget's own key after that widget
+    # has been instantiated, so the button cannot set 'risk_cust_id'
+    # directly — it sets the pending value and reruns instead.
+    if "risk_pending_id" not in st.session_state:
+        st.session_state.risk_pending_id = int(df.customer_id.iloc[0])
+
+    pick = st.columns([1, 1, 1, 1])
     with pick[1]:
-        st.markdown("<div style='height:1.6rem'></div>",
+        st.markdown("<div style='height:1.65rem'></div>",
                     unsafe_allow_html=True)
-        if st.button("Random retained customer", key="rand_retained"):
-            st.session_state.risk_cust_id = int(
+        if st.button("Random churner", key="rand_churned",
+                     use_container_width=True):
+            st.session_state.risk_pending_id = int(
+                df[df.churned == 1].sample(1).customer_id.iloc[0])
+            st.rerun()
+    with pick[2]:
+        st.markdown("<div style='height:1.65rem'></div>",
+                    unsafe_allow_html=True)
+        if st.button("Random retained", key="rand_retained",
+                     use_container_width=True):
+            st.session_state.risk_pending_id = int(
                 df[df.churned == 0].sample(1).customer_id.iloc[0])
             st.rerun()
+
+    with pick[0]:
+        chosen = st.number_input(
+            "Customer ID",
+            min_value=int(df.customer_id.min()),
+            max_value=int(df.customer_id.max()),
+            value=st.session_state.risk_pending_id,
+            step=1, key="risk_cust_id")
 
     try:
         detail = be.explain_customer(int(chosen))
